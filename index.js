@@ -206,7 +206,7 @@ async function handleModeration(message, severity, username) {
     } catch(e) { pushEvent('error', { message: 'Ban failed: ' + e.message }); }
   }
 
-  return severity >= 3; // return true (stop processing) only on severe messages
+  return severity >= 3;
 }
 
 // ═══════════════════════════════════════════════
@@ -619,7 +619,7 @@ function scheduleThoughts() {
   pushEvent('system', { message: `Next spontaneous thought in ~${Math.round(delayMs / 60000)} min` });
   setTimeout(async () => {
     if (Math.random() < 0.2) {
-      await sendWakeup(); // 20% chance of a wakeup
+      await sendWakeup();
     } else {
       await sendSpontaneous();
     }
