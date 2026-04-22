@@ -29,7 +29,6 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers,
   ]
 });
 
@@ -275,11 +274,11 @@ async function executeMod(modAction, guild) {
   const { action, username, duration, reason } = modAction;
 
   try {
-    await guild.members.fetch();
-    const member = guild.members.cache.find(m =>
-      m.user.username.toLowerCase() === username.toLowerCase() ||
-      m.displayName.toLowerCase() === username.toLowerCase()
-    );
+const members = await guild.members.fetch({ query: username, limit: 5 });
+const member = members.find(m =>
+  m.user.username.toLowerCase() === username.toLowerCase() ||
+  m.displayName.toLowerCase() === username.toLowerCase()
+);
 
     if (!member) {
       pushEvent('mod_fail', { action, username, reason: 'User not found' });
