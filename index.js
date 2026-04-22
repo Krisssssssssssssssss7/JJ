@@ -415,7 +415,7 @@ app.post('/api/clear-profiles', (_, res) => {
   res.json({ ok: true });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🎪 Caine console running on port ${PORT}`);
   pushEvent('system', { message: `Web console live on port ${PORT}` });
 });
