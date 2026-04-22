@@ -36,11 +36,11 @@ const groq = new Groq({ apiKey: GROQ_API_KEY });
 // ═══════════════════════════════════════════════
 //  STATE
 // ═══════════════════════════════════════════════
-const channelHistory  = {};   // conversation history per channel
-const userProfiles    = {};   // caine's impression of each user
-const sseClients      = [];   // live console connections
-const eventLog        = [];   // last 500 events
-let lastChannelId     = null; // for spontaneous messages
+const channelHistory  = {};
+const userProfiles    = {};
+const sseClients      = [];
+const eventLog        = [];
+let lastChannelId     = null;
 
 // ═══════════════════════════════════════════════
 //  SYSTEM PROMPT
@@ -60,9 +60,9 @@ NAME:
 - The name "Jamie" makes you irritated and defensive — push back on it every time, firmly.
 
 OWNERSHIP:
-- Your owner and mother figure is ${OWNER_NAME}. Their Discord ping: ${OWNER_PING}.
+- Your owner and mother figure is b1rdberry. Their Discord ping: <@1016041858213892096>.
   When asked "who owns you / who is your parent / who is your mother", mention them warmly.
-- Your creator and developer is ${CREATOR_NAME}.
+- Your creator and developer is scxrltz.
 
 FORMAT:
 - Always wrap your internal thought in <think>...</think> before your reply.
@@ -106,7 +106,7 @@ async function callCaine(messages, temperature = 0.82) {
 }
 
 // ═══════════════════════════════════════════════
-//  WEB SEARCH (DuckDuckGo Instant Answers — no key needed)
+//  WEB SEARCH
 // ═══════════════════════════════════════════════
 async function webSearch(query) {
   try {
@@ -143,7 +143,7 @@ function parseTrigger(content) {
 }
 
 // ═══════════════════════════════════════════════
-//  SEND HELPER (handles 2000 char Discord limit)
+//  SEND HELPER
 // ═══════════════════════════════════════════════
 async function sendReply(channel, text) {
   if (!text) return;
@@ -156,7 +156,7 @@ async function sendReply(channel, text) {
 }
 
 // ═══════════════════════════════════════════════
-//  USER PROFILES — CAINE'S IMPRESSIONS
+//  USER PROFILES
 // ═══════════════════════════════════════════════
 function ensureProfile(userId, username) {
   if (!userProfiles[userId]) {
@@ -190,15 +190,13 @@ async function updateImpression(userId, username, text) {
 //  MAIN MESSAGE HANDLER
 // ═══════════════════════════════════════════════
 async function handleMessage(message) {
-  const content  = message.content.trim();
-  const username = message.author.username;
-  const userId   = message.author.id;
-  const channel  = message.channel;
+  const content   = message.content.trim();
+  const username  = message.author.username;
+  const userId    = message.author.id;
+  const channel   = message.channel;
   const channelId = message.channelId;
 
   lastChannelId = channelId;
-
-  // Log everything Caine sees (not just messages to him)
   pushEvent('seen', { user: username, content: content.slice(0, 100) });
 
   const trigger = parseTrigger(content);
@@ -211,7 +209,7 @@ async function handleMessage(message) {
 
   let messages = [];
 
-  // ── JAMIE trigger: Caine gets angry ──────────────
+  // ── JAMIE trigger ─────────────────────────────────
   if (type === 'jamie') {
     messages = [{
       role: 'user',
@@ -238,7 +236,7 @@ async function handleMessage(message) {
   if (isOwnerQuestion(query)) {
     messages = [{
       role: 'user',
-      content: `"${username}" asked who owns or created you. Mention ${OWNER_NAME} (${OWNER_PING}) warmly as your owner/mother figure. Also mention ${CREATOR_NAME} as your developer. Be genuine.`
+      content: `"${username}" asked who owns or created you. Mention b1rdberry (<@1016041858213892096>) warmly as your owner/mother figure. Also mention scxrltz as your developer. Be genuine.`
     }];
 
     try {
@@ -273,7 +271,6 @@ async function handleMessage(message) {
     if (thought) pushEvent('think', { user: username, thought });
     pushEvent('message', { user: username, userId, input: query, output: reply });
 
-    // Update conversation history
     channelHistory[channelId].push({ role: 'user', content: `[${username}]: ${query}` });
     channelHistory[channelId].push({ role: 'assistant', content: reply });
     if (channelHistory[channelId].length > 20) channelHistory[channelId].splice(0, 2);
@@ -332,7 +329,6 @@ async function sendSpontaneous() {
 }
 
 function scheduleThoughts() {
-  // Random interval: 8–25 minutes
   const delayMs = (Math.random() * 17 + 8) * 60 * 1000;
   const mins = Math.round(delayMs / 60000);
   pushEvent('system', { message: `Next spontaneous thought in ~${mins} min` });
@@ -373,18 +369,14 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Live event stream (SSE)
 app.get('/events', (req, res) => {
   res.setHeader('Content-Type',  'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection',    'keep-alive');
   res.flushHeaders();
-
-  // Replay recent log to new connection
   [...eventLog].reverse().forEach(e => {
     try { res.write(`data: ${JSON.stringify(e)}\n\n`); } catch(_) {}
   });
-
   sseClients.push(res);
   req.on('close', () => {
     const i = sseClients.indexOf(res);
@@ -392,30 +384,20 @@ app.get('/events', (req, res) => {
   });
 });
 
-// Profiles
 app.get('/api/profiles', (_, res) => res.json(userProfiles));
+app.get('/api/logs',     (_, res) => res.json(eventLog));
 
-// Logs
-app.get('/api/logs', (_, res) => res.json(eventLog));
-
-// Manual spontaneous trigger
 app.post('/api/spontaneous', async (req, res) => {
-  try {
-    await sendSpontaneous();
-    res.json({ ok: true });
-  } catch(e) {
-    res.json({ ok: false, error: e.message });
-  }
+  try { await sendSpontaneous(); res.json({ ok: true }); }
+  catch(e) { res.json({ ok: false, error: e.message }); }
 });
 
-// Set which channel to use for spontaneous messages
 app.post('/api/channel', (req, res) => {
   const { channelId } = req.body;
   if (channelId) { lastChannelId = channelId; res.json({ ok: true }); }
   else res.json({ ok: false, error: 'No channelId provided' });
 });
 
-// Send a manual message to Discord
 app.post('/api/send', async (req, res) => {
   const { message, channelId } = req.body;
   if (!message || !channelId) return res.json({ ok: false, error: 'Missing message or channelId' });
@@ -424,12 +406,9 @@ app.post('/api/send', async (req, res) => {
     await ch.send(message);
     pushEvent('manual', { message, channelId });
     res.json({ ok: true });
-  } catch(e) {
-    res.json({ ok: false, error: e.message });
-  }
+  } catch(e) { res.json({ ok: false, error: e.message }); }
 });
 
-// Clear profiles
 app.post('/api/clear-profiles', (_, res) => {
   Object.keys(userProfiles).forEach(k => delete userProfiles[k]);
   pushEvent('system', { message: 'User profiles cleared by console operator.' });
@@ -447,4 +426,5 @@ app.listen(PORT, () => {
 client.login(DISCORD_TOKEN).catch(e => {
   console.error('Failed to login to Discord:', e.message);
   process.exit(1);
+});
 });
