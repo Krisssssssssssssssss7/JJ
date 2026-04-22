@@ -152,7 +152,7 @@ async function callJJ(messages, temperature = 0.85) {
   const res = await groq.chat.completions.create({
     model: MODEL,
     messages: [{ role: 'system', content: buildSystemPrompt() }, ...messages],
-    max_tokens: 700,
+    max_tokens: 300,
     temperature,
   });
 
@@ -162,7 +162,7 @@ async function callJJ(messages, temperature = 0.85) {
 
   // Extract mod actions before cleaning reply
   const modActions = [];
-  const modRegex = /\[MOD:(timeout|kick|ban):([^:\]]+)(?::(\d+))?:([^\]]+)\]/gi;
+  const modRegex = /\[?MOD:(timeout|kick|ban):([^:\]\n]+)(?::(\d+))?:([^\]\n\[]+)\]?/gi;
   let m;
   while ((m = modRegex.exec(raw)) !== null) {
     modActions.push({
@@ -173,10 +173,11 @@ async function callJJ(messages, temperature = 0.85) {
     });
   }
 
-  const reply = raw
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(modRegex, '')
-    .trim();
+const reply = raw
+  .replace(/<think>[\s\S]*?<\/think>/gi, '')
+  .replace(/<think>[\s\S]*/gi, '')   // catches unclosed <think> tags
+  .replace(modRegex, '')
+  .trim();
 
   return { thought, reply, modActions };
 }
@@ -447,7 +448,7 @@ async function handleMessage(message) {
     if (webCtx) pushEvent('web', { query, snippet: webCtx.slice(0, 150) });
   }
 
-  const history = channelHistory[channelId].slice(-10);
+const history = channelHistory[channelId].slice(-4);
   messages = [
     ...history,
     { role: 'user', content: webCtx ? `[${username}]: ${query}\n\n[WEB INFO: ${webCtx}]` : `[${username}]: ${query}` }
