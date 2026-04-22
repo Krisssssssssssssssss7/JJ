@@ -341,7 +341,7 @@ function scheduleThoughts() {
 // ═══════════════════════════════════════════════
 //  DISCORD EVENTS
 // ═══════════════════════════════════════════════
-client.once('ready', () => {
+client.once('clientReady', () => {
   console.log(`✨ Caine is online as ${client.user.tag}`);
   pushEvent('system', { message: `Caine online as ${client.user.tag}` });
   scheduleThoughts();
