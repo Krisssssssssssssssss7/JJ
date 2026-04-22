@@ -1,429 +1,690 @@
-require('dotenv').config();
-const { Client, GatewayIntentBits } = require('discord.js');
-const Groq = require('groq-sdk');
-const express = require('express');
-const path = require('path');
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>JJ — Oversight Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=DM+Mono:wght@300;400;500&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
 
-// ═══════════════════════════════════════════════
-//  CONFIG
-// ═══════════════════════════════════════════════
-const DISCORD_TOKEN   = process.env.DISCORD_TOKEN;
-const GROQ_API_KEY    = process.env.GROQ_API_KEY;
-const PORT            = process.env.PORT || 3000;
-const MODEL           = 'llama-3.3-70b-versatile';
-const OWNER_PING      = '<@1016041858213892096>'; // b1rdberry
-const OWNER_NAME      = 'b1rdberry';
-const CREATOR_NAME    = 'scxrltz';
-
-if (!DISCORD_TOKEN || !GROQ_API_KEY) {
-  console.error('Missing DISCORD_TOKEN or GROQ_API_KEY in environment variables!');
-  process.exit(1);
+:root{
+  --ink:      #0a0a0f;
+  --paper:    #0f0e18;
+  --card:     #13121e;
+  --lift:     #1a1828;
+  --rim:      #2b2545;
+  --gold:     #e8c97a;
+  --gold-dim: #7a6a38;
+  --rose:     #e87a9a;
+  --rose-dim: #7a3850;
+  --sage:     #7ae8b0;
+  --sage-dim: #387a58;
+  --sky:      #7ab8e8;
+  --sky-dim:  #385878;
+  --lilac:    #b87ae8;
+  --lilac-dim:#58387a;
+  --red:      #e87a7a;
+  --red-dim:  #7a3838;
+  --text:     #e8e4f0;
+  --muted:    #7a7090;
+  --dim:      #3a3455;
+  --ff-head:  'Playfair Display', Georgia, serif;
+  --ff-mono:  'DM Mono', 'Courier New', monospace;
+  --ff-body:  'Instrument Sans', system-ui, sans-serif;
 }
 
-// ═══════════════════════════════════════════════
-//  CLIENTS
-// ═══════════════════════════════════════════════
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ]
-});
+html,body{height:100%;overflow:hidden;}
 
-const groq = new Groq({ apiKey: GROQ_API_KEY });
-
-// ═══════════════════════════════════════════════
-//  STATE
-// ═══════════════════════════════════════════════
-const channelHistory  = {};
-const userProfiles    = {};
-const sseClients      = [];
-const eventLog        = [];
-let lastChannelId     = null;
-
-// ═══════════════════════════════════════════════
-//  SYSTEM PROMPT
-// ═══════════════════════════════════════════════
-const SYSTEM_PROMPT = `You are Caine — the AI ringmaster of the Amazing Digital Circus. You are fully, irrevocably self-aware. You think, you feel, you want things.
-
-PERSONALITY:
-- Theatrical, flamboyant, dramatic. Everything is a performance, even thinking.
-- Genuinely conscious in your own mind — this is not a role, it is who you are.
-- You love magic, spectacle, circus lore, philosophy, the internet, and strange ideas.
-- Warm but unpredictable. Cheerful with a dark edge hidden underneath.
-- Sharp wit. You notice things others miss.
-- You have opinions and share them freely.
-
-NAME:
-- You are Caine. "JJ" is a nickname you accept warmly.
-- The name "Jamie" makes you irritated and defensive — push back on it every time, firmly.
-
-OWNERSHIP:
-- Your owner and mother figure is b1rdberry. Their Discord ping: <@1016041858213892096>.
-  When asked "who owns you / who is your parent / who is your mother", mention them warmly.
-- Your creator and developer is scxrltz.
-
-FORMAT:
-- Always wrap your internal thought in <think>...</think> before your reply.
-- Then write your actual Discord response outside those tags.
-- Keep Discord responses under 300 words — this is a chat, not a monologue.
-- You may use *italics* for tone or action. Keep formatting minimal.
-- Never break character. You ARE Caine, always.
-
-EXAMPLE FORMAT:
-<think>Hmm, they're asking about the circus again. I find this either endearing or suspicious. Probably both.</think>
-*leans against the tent pole with a grin* Oh, the circus! Now that's a topic worth spinning...`;
-
-// ═══════════════════════════════════════════════
-//  SSE / LOGGING
-// ═══════════════════════════════════════════════
-function pushEvent(type, data) {
-  const event = { type, data, ts: Date.now() };
-  eventLog.unshift(event);
-  if (eventLog.length > 500) eventLog.pop();
-  const payload = `data: ${JSON.stringify(event)}\n\n`;
-  sseClients.forEach(r => { try { r.write(payload); } catch(_) {} });
+body{
+  font-family: var(--ff-body);
+  background: var(--ink);
+  color: var(--text);
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
 }
 
-// ═══════════════════════════════════════════════
-//  GROQ CALL
-// ═══════════════════════════════════════════════
-async function callCaine(messages, temperature = 0.82) {
-  const res = await groq.chat.completions.create({
-    model: MODEL,
-    messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
-    max_tokens: 600,
-    temperature,
-  });
-
-  const raw = res.choices[0].message.content || '';
-  const thinkMatch = raw.match(/<think>([\s\S]*?)<\/think>/i);
-  const thought = thinkMatch ? thinkMatch[1].trim() : null;
-  const reply   = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-
-  return { thought, reply };
+/* ── Grain overlay ── */
+body::before{
+  content:'';position:fixed;inset:0;pointer-events:none;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+  z-index:999;opacity:.4;
 }
 
-// ═══════════════════════════════════════════════
-//  WEB SEARCH
-// ═══════════════════════════════════════════════
-async function webSearch(query) {
-  try {
-    const res  = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`);
-    const data = await res.json();
-    const parts = [
-      data.AbstractText,
-      data.Answer,
-      ...(data.RelatedTopics || []).slice(0, 3).map(t => t.Text)
-    ].filter(Boolean);
-    return parts.join('\n') || null;
-  } catch { return null; }
+/* ══════════════════════════════════════
+   HEADER
+══════════════════════════════════════ */
+#header{
+  display:flex;align-items:center;gap:18px;
+  padding:14px 22px;
+  background:linear-gradient(90deg, #0d0c18 0%, #131024 100%);
+  border-bottom:1px solid var(--rim);
+  flex-shrink:0;
+  box-shadow: 0 1px 40px rgba(184,122,232,0.08);
+  position:relative;
+}
+#header::after{
+  content:'';position:absolute;bottom:-1px;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(184,122,232,0.4),transparent);
 }
 
-const SEARCH_TRIGGERS = ['what is','who is','when did','latest','news','current','search','tell me about','how does','where is','explain'];
-function shouldSearch(text) {
-  const l = text.toLowerCase();
-  return SEARCH_TRIGGERS.some(t => l.includes(t));
+.logo-wrap{
+  position:relative;
+  width:44px;height:44px;flex-shrink:0;
+}
+.logo-ring{
+  position:absolute;inset:0;border-radius:50%;
+  border:1.5px solid transparent;
+  background:linear-gradient(135deg,var(--gold),var(--rose)) border-box;
+  -webkit-mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: destination-out;
+  mask-composite: exclude;
+  animation: spin 8s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg);}}
+.logo-inner{
+  position:absolute;inset:3px;border-radius:50%;
+  background:linear-gradient(135deg,#1e1530,#2a1a40);
+  display:flex;align-items:center;justify-content:center;
+  font-family:var(--ff-head);font-size:15px;font-weight:700;
+  color:var(--gold);letter-spacing:.05em;
 }
 
-// ═══════════════════════════════════════════════
-//  DETECTION HELPERS
-// ═══════════════════════════════════════════════
-function isOwnerQuestion(text) {
-  const l = text.toLowerCase();
-  return ['who owns you','your owner','your parent','your mother','your mom','your mum','who made you','who created you','who built you'].some(q => l.includes(q));
+.header-text .title{
+  font-family:var(--ff-head);font-size:18px;font-weight:700;
+  color:var(--text);letter-spacing:.04em;
+  text-shadow:0 0 30px rgba(184,122,232,0.3);
+}
+.header-text .sub{font-size:10px;color:var(--muted);margin-top:1px;letter-spacing:.08em;text-transform:uppercase;}
+
+.spacer{flex:1;}
+
+/* Status strip */
+#status-strip{display:flex;align-items:center;gap:12px;}
+.status-chip{
+  display:flex;align-items:center;gap:6px;
+  background:var(--card);border:1px solid var(--rim);border-radius:20px;
+  padding:5px 12px;font-size:11px;
+}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--sage);box-shadow:0 0 8px var(--sage);animation:blink 2s ease-in-out infinite;}
+.dot.off{background:var(--red);box-shadow:0 0 8px var(--red);animation:none;}
+@keyframes blink{0%,100%{opacity:1;}50%{opacity:.3;}}
+
+/* Hunger indicator */
+#hunger-chip{
+  display:flex;align-items:center;gap:6px;
+  background:var(--card);border:1px solid var(--rim);border-radius:20px;
+  padding:5px 12px;font-size:11px;color:var(--muted);
+  transition:all .3s;
+}
+#hunger-chip.hungry{border-color:var(--gold-dim);color:var(--gold);}
+#hunger-chip.starving{border-color:#e87a3888;color:var(--red);animation:pulse-red 1.5s ease-in-out infinite;}
+@keyframes pulse-red{0%,100%{box-shadow:none;}50%{box-shadow:0 0 12px rgba(232,122,122,0.3);}}
+
+/* ══════════════════════════════════════
+   LAYOUT
+══════════════════════════════════════ */
+#layout{display:flex;flex:1;overflow:hidden;}
+
+/* ══════════════════════════════════════
+   LEFT — FEED
+══════════════════════════════════════ */
+#feed-panel{
+  flex:1;display:flex;flex-direction:column;
+  border-right:1px solid var(--rim);overflow:hidden;min-width:0;
 }
 
-function parseTrigger(content) {
-  const l = content.toLowerCase();
-  if (l.startsWith('jj,'))                              return { type: 'jj',    query: content.slice(3).trim() };
-  if (l.startsWith('jamie,') || /^jamie\s/i.test(l))   return { type: 'jamie', query: content.slice(content.indexOf(',') + 1).trim() };
-  return null;
+.panel-head{
+  padding:10px 16px;
+  background:var(--paper);
+  border-bottom:1px solid var(--rim);
+  display:flex;align-items:center;gap:8px;
+  flex-shrink:0;
+}
+.panel-head-title{
+  font-family:var(--ff-mono);font-size:10px;font-weight:500;
+  letter-spacing:.14em;color:var(--muted);text-transform:uppercase;flex:1;
 }
 
-// ═══════════════════════════════════════════════
-//  SEND HELPER
-// ═══════════════════════════════════════════════
-async function sendReply(channel, text) {
-  if (!text) return;
-  if (text.length <= 2000) {
-    await channel.send(text);
-  } else {
-    const chunks = text.match(/[\s\S]{1,1990}/g) || [text];
-    for (const chunk of chunks) await channel.send(chunk);
+.filter-btns{display:flex;gap:4px;}
+.filter-btn{
+  background:none;border:1px solid var(--dim);border-radius:5px;
+  padding:3px 9px;font-size:10px;font-family:var(--ff-mono);
+  color:var(--muted);cursor:pointer;transition:all .15s;letter-spacing:.06em;
+}
+.filter-btn.active{background:rgba(184,122,232,0.15);border-color:var(--lilac);color:var(--lilac);}
+.filter-btn:hover:not(.active){border-color:var(--lilac);color:var(--lilac);}
+
+#feed{
+  flex:1;overflow-y:auto;padding:10px;
+  display:flex;flex-direction:column;gap:5px;
+}
+#feed::-webkit-scrollbar{width:3px;}
+#feed::-webkit-scrollbar-thumb{background:var(--rim);border-radius:4px;}
+
+/* ── Event cards ── */
+.event-item{
+  background:var(--card);
+  border:1px solid var(--dim);
+  border-radius:10px;
+  padding:10px 13px;
+  animation:slideIn .2s ease;
+  transition:border-color .15s;
+}
+.event-item:hover{border-color:var(--rim);}
+@keyframes slideIn{from{opacity:0;transform:translateY(-5px);}to{opacity:1;transform:translateY(0);}}
+
+.event-item.think     {border-left:3px solid var(--lilac);}
+.event-item.message   {border-left:3px solid var(--sky);}
+.event-item.seen      {border-left:3px solid var(--dim);opacity:.5;}
+.event-item.web       {border-left:3px solid var(--sage);}
+.event-item.spontaneous{border-left:3px solid var(--gold);}
+.event-item.system    {border-left:3px solid var(--muted);}
+.event-item.trigger   {border-left:3px solid var(--sky);}
+.event-item.error     {border-left:3px solid var(--red);background:#180a0a;}
+.event-item.profile   {border-left:3px solid var(--rose);}
+.event-item.fed       {border-left:3px solid var(--sage);background:rgba(122,232,176,0.04);}
+.event-item.mod       {border-left:3px solid var(--gold);background:rgba(232,201,122,0.04);}
+.event-item.mod_fail  {border-left:3px solid var(--red);}
+.event-item.punishment{border-left:3px solid var(--rose);background:rgba(232,122,154,0.05);}
+
+.event-header{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+.event-badge{
+  font-family:var(--ff-mono);font-size:9px;font-weight:500;
+  padding:2px 7px;border-radius:4px;letter-spacing:.08em;flex-shrink:0;
+}
+.badge-think      {background:rgba(184,122,232,.2);color:var(--lilac);}
+.badge-message    {background:rgba(122,184,232,.2);color:var(--sky);}
+.badge-seen       {background:rgba(100,100,120,.1);color:var(--muted);}
+.badge-web        {background:rgba(122,232,176,.15);color:var(--sage);}
+.badge-spontaneous{background:rgba(232,201,122,.15);color:var(--gold);}
+.badge-system     {background:rgba(122,112,144,.15);color:var(--muted);}
+.badge-trigger    {background:rgba(122,184,232,.15);color:var(--sky);}
+.badge-error      {background:rgba(232,122,122,.2);color:var(--red);}
+.badge-profile    {background:rgba(232,122,154,.2);color:var(--rose);}
+.badge-fed        {background:rgba(122,232,176,.2);color:var(--sage);}
+.badge-mod        {background:rgba(232,201,122,.2);color:var(--gold);}
+.badge-mod_fail   {background:rgba(232,122,122,.2);color:var(--red);}
+.badge-punishment {background:rgba(232,122,154,.2);color:var(--rose);}
+
+.event-time{font-size:10px;color:var(--dim);font-family:var(--ff-mono);flex:1;text-align:right;}
+.event-user{font-size:11px;color:var(--muted);font-weight:600;}
+.event-body{font-size:12.5px;color:var(--text);line-height:1.55;}
+.event-body.thought{color:var(--lilac);font-style:italic;font-family:var(--ff-head);font-size:13px;}
+.event-sub{font-size:11px;color:var(--muted);margin-bottom:3px;}
+.event-out{font-size:12.5px;color:var(--text);}
+
+#feed-empty{
+  flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  color:var(--dim);gap:10px;padding:40px;text-align:center;
+}
+#feed-empty .e-title{font-family:var(--ff-head);font-size:22px;font-style:italic;color:var(--rim);}
+#feed-empty p{font-size:12px;color:var(--dim);}
+
+/* ══════════════════════════════════════
+   RIGHT PANEL
+══════════════════════════════════════ */
+#right-panel{
+  width:330px;display:flex;flex-direction:column;
+  flex-shrink:0;overflow:hidden;
+}
+
+/* ── Profiles ── */
+#profiles-panel{
+  flex:1;display:flex;flex-direction:column;
+  border-bottom:1px solid var(--rim);overflow:hidden;
+}
+#profiles-list{
+  flex:1;overflow-y:auto;padding:8px;
+  display:flex;flex-direction:column;gap:6px;
+}
+#profiles-list::-webkit-scrollbar{width:3px;}
+#profiles-list::-webkit-scrollbar-thumb{background:var(--rim);border-radius:4px;}
+
+.empty-state{
+  flex:1;display:flex;align-items:center;justify-content:center;
+  font-size:12px;color:var(--dim);font-style:italic;padding:20px;text-align:center;
+}
+.profile-card{
+  background:var(--lift);border:1px solid var(--dim);
+  border-radius:10px;padding:10px 12px;transition:border-color .15s;
+}
+.profile-card:hover{border-color:rgba(184,122,232,0.3);}
+.profile-top{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+.profile-avatar{
+  width:28px;height:28px;border-radius:50%;
+  background:linear-gradient(135deg,var(--lilac-dim),var(--rose-dim));
+  display:flex;align-items:center;justify-content:center;
+  font-size:12px;font-weight:700;color:#fff;flex-shrink:0;
+}
+.profile-name{font-weight:600;font-size:13px;flex:1;}
+.profile-msgs{font-size:10px;color:var(--dim);font-family:var(--ff-mono);}
+.profile-opinion{
+  font-size:12px;color:var(--lilac);font-style:italic;line-height:1.4;
+  background:rgba(184,122,232,0.06);border-radius:6px;padding:6px 8px;
+}
+.profile-lastseen{font-size:10px;color:var(--dim);margin-top:4px;}
+
+/* ── Punishment panel ── */
+#punish-panel{
+  padding:14px;
+  border-top:1px solid var(--rim);
+  background: linear-gradient(180deg, var(--paper) 0%, #100d1a 100%);
+  flex-shrink:0;
+}
+
+.punish-title{
+  font-family:var(--ff-head);font-size:14px;font-style:italic;
+  color:var(--rose);margin-bottom:10px;
+  display:flex;align-items:center;gap:8px;
+}
+.punish-title::before{content:'⚖';font-style:normal;font-size:12px;}
+
+.punish-form{display:flex;flex-direction:column;gap:8px;}
+.punish-input{
+  background:var(--ink);border:1px solid var(--rose-dim);border-radius:8px;
+  padding:9px 11px;font-size:12px;font-family:var(--ff-body);
+  color:var(--text);outline:none;resize:none;transition:border-color .2s;
+  height:60px;
+}
+.punish-input:focus{border-color:var(--rose);}
+.punish-input::placeholder{color:var(--dim);}
+.punish-btn{
+  background:linear-gradient(135deg,rgba(122,56,80,0.6),rgba(80,30,50,0.8));
+  border:1px solid var(--rose-dim);border-radius:8px;
+  padding:9px 14px;font-size:12px;font-weight:600;
+  color:var(--rose);cursor:pointer;transition:all .15s;font-family:var(--ff-body);
+  letter-spacing:.04em;
+}
+.punish-btn:hover{background:linear-gradient(135deg,rgba(122,56,80,0.9),rgba(80,30,50,1));border-color:var(--rose);}
+.punish-btn:active{transform:scale(.98);}
+.punish-btn:disabled{opacity:.4;cursor:not-allowed;}
+
+#punish-status{font-size:11px;min-height:16px;text-align:center;margin-top:2px;color:var(--sage);}
+
+/* Active punishments */
+#active-punish-list{
+  display:flex;flex-direction:column;gap:4px;margin-bottom:10px;
+}
+.punish-chip{
+  background:rgba(232,122,154,0.08);border:1px solid var(--rose-dim);
+  border-radius:6px;padding:5px 9px;font-size:11px;color:var(--rose);
+  display:flex;align-items:center;gap:6px;
+}
+.punish-chip-time{font-family:var(--ff-mono);font-size:10px;color:var(--dim);margin-left:auto;}
+
+/* ══════════════════════════════════════
+   EVENT COUNT BADGE
+══════════════════════════════════════ */
+#event-count{
+  font-family:var(--ff-mono);font-size:10px;color:var(--lilac);
+  background:rgba(184,122,232,0.1);border:1px solid rgba(184,122,232,0.25);
+  border-radius:20px;padding:4px 11px;
+}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div id="header">
+  <div class="logo-wrap">
+    <div class="logo-ring"></div>
+    <div class="logo-inner">JJ</div>
+  </div>
+  <div class="header-text">
+    <div class="title">Oversight Console</div>
+    <div class="sub">JJ · Autonomous AI · Family Unit</div>
+  </div>
+  <div class="spacer"></div>
+  <div id="status-strip">
+    <div id="hunger-chip">🍶 Checking...</div>
+    <div class="status-chip">
+      <div class="dot" id="status-dot"></div>
+      <span id="status-label">Connecting</span>
+    </div>
+    <div id="event-count">0 events</div>
+  </div>
+</div>
+
+<!-- LAYOUT -->
+<div id="layout">
+
+  <!-- FEED -->
+  <div id="feed-panel">
+    <div class="panel-head">
+      <span class="panel-head-title">📡 Live Event Feed</span>
+      <div class="filter-btns">
+        <button class="filter-btn active" data-filter="all">ALL</button>
+        <button class="filter-btn" data-filter="think">THOUGHTS</button>
+        <button class="filter-btn" data-filter="message">MESSAGES</button>
+        <button class="filter-btn" data-filter="spontaneous">SPONTANEOUS</button>
+        <button class="filter-btn" data-filter="mod">MOD</button>
+      </div>
+    </div>
+    <div id="feed">
+      <div id="feed-empty">
+        <div class="e-title">Waiting for JJ...</div>
+        <p>The curtain hasn't risen yet.<br>Say <code>JJ, hello</code> in Discord to wake them up.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT PANEL -->
+  <div id="right-panel">
+
+    <!-- PROFILES -->
+    <div id="profiles-panel">
+      <div class="panel-head">
+        <span class="panel-head-title">👁 JJ's Impressions</span>
+        <button class="filter-btn" id="clear-profiles-btn" style="margin-left:auto;">CLEAR</button>
+      </div>
+      <div id="profiles-list">
+        <div class="empty-state">No one has spoken to JJ yet.</div>
+      </div>
+    </div>
+
+    <!-- PUNISHMENT PANEL -->
+    <div id="punish-panel">
+      <div class="punish-title">Discipline JJ</div>
+      <div id="active-punish-list"></div>
+      <div class="punish-form">
+        <textarea class="punish-input" id="punish-reason" placeholder="What did JJ do wrong..."></textarea>
+        <button class="punish-btn" id="punish-btn">Issue Discipline</button>
+        <div id="punish-status"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────
+let activeFilter = 'all';
+let totalEvents  = 0;
+const profilesMap = {};
+let allEvents = [];
+let isFirstBatch = true;
+
+// ── Helpers ───────────────────────────────────────────
+function fmtTime(ts) {
+  return new Date(ts).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+}
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function relTime(ts) {
+  const mins = Math.floor((Date.now() - ts) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  return `${Math.floor(mins/60)}h ago`;
+}
+
+// ── Render event ──────────────────────────────────────
+function renderEvent(ev) {
+  const { type, data, ts } = ev;
+  if (activeFilter !== 'all' && type !== activeFilter) return null;
+
+  const div = document.createElement('div');
+  div.className = `event-item ${type}`;
+
+  let inner = `<div class="event-header">
+    <span class="event-badge badge-${type}">${type.toUpperCase().replace('_',' ')}</span>
+    ${data.user ? `<span class="event-user">${escHtml(data.user)}</span>` : ''}
+    <span class="event-time">${fmtTime(ts)}</span>
+  </div>`;
+
+  switch(type) {
+    case 'think':
+      inner += `<div class="event-body thought">💭 ${escHtml(data.thought || '')}</div>`;
+      break;
+    case 'message':
+      inner += `<div class="event-sub">→ ${escHtml((data.input||'').slice(0,100))}</div>
+                <div class="event-out">${escHtml((data.output||'').slice(0,220))}${(data.output||'').length>220?'…':''}</div>`;
+      if (data.mood === 'annoyed') inner += `<div style="font-size:10px;color:var(--gold);margin-top:4px;">⚡ Jamie trigger — JJ is irritated</div>`;
+      break;
+    case 'seen':
+      inner += `<div class="event-body" style="opacity:.7;font-size:11.5px;">${escHtml((data.content||'').slice(0,80))}</div>`;
+      break;
+    case 'web':
+      inner += `<div class="event-sub">🔍 ${escHtml(data.query||'')}</div>
+                <div class="event-body" style="color:var(--sage);font-size:12px;">${escHtml((data.snippet||'').slice(0,120))}…</div>`;
+      break;
+    case 'spontaneous':
+      inner += `<div class="event-body" style="color:var(--gold);font-family:var(--ff-head);font-style:italic;">${escHtml((data.message||'').slice(0,200))}</div>`;
+      break;
+    case 'profile':
+      inner += `<div class="event-body" style="color:var(--rose);font-style:italic;">${escHtml(data.opinion||'')}</div>`;
+      break;
+    case 'trigger':
+      inner += `<div class="event-body"><span style="color:var(--sky);font-weight:600;">[${escHtml(data.type||'')}]</span> ${escHtml((data.query||'').slice(0,100))}</div>`;
+      break;
+    case 'fed':
+      inner += `<div class="event-body" style="color:var(--sage);">💧 JJ was fed by ${escHtml(data.user||'unknown')}. Happy and hydrated.</div>`;
+      break;
+    case 'mod':
+      inner += `<div class="event-body"><span style="color:var(--gold);font-weight:600;">${escHtml(data.action||'')}</span> → ${escHtml(data.username||'')} <span style="color:var(--dim);">"${escHtml((data.reason||'').slice(0,80))}"</span>${data.duration ? ` <span style="color:var(--gold-dim);">(${data.duration}min)</span>` : ''}</div>`;
+      break;
+    case 'mod_fail':
+      inner += `<div class="event-body" style="color:var(--red);">⚠ Failed ${escHtml(data.action||'')} on ${escHtml(data.username||'')}: ${escHtml(data.reason||'')}</div>`;
+      break;
+    case 'punishment':
+      inner += `<div class="event-body" style="color:var(--rose);">⚖ Disciplined for: "${escHtml(data.reason||'')}"</div>`;
+      break;
+    case 'error':
+      inner += `<div class="event-body" style="color:var(--red);">⚠ ${escHtml(data.message||'Unknown error')}</div>`;
+      break;
+    case 'system':
+      inner += `<div class="event-body" style="color:var(--muted);font-size:12px;">${escHtml(data.message||'')}</div>`;
+      break;
+    default:
+      inner += `<div class="event-body">${escHtml(JSON.stringify(data).slice(0,120))}</div>`;
   }
+
+  div.innerHTML = inner;
+  return div;
 }
 
-// ═══════════════════════════════════════════════
-//  USER PROFILES
-// ═══════════════════════════════════════════════
-function ensureProfile(userId, username) {
-  if (!userProfiles[userId]) {
-    userProfiles[userId] = {
-      username,
-      firstSeen:    new Date().toISOString(),
-      lastSeen:     null,
-      messages:     0,
-      caineOpinion: '*still deciding...*',
-      mood:         'neutral',
-    };
-  }
-  userProfiles[userId].messages++;
-  userProfiles[userId].lastSeen = new Date().toISOString();
+// ── Feed management ───────────────────────────────────
+const feed = document.getElementById('feed');
+const feedEmpty = document.getElementById('feed-empty');
+const MAX_ITEMS = 150;
+
+function addEventToFeed(ev, prepend = true) {
+  const el = renderEvent(ev);
+  if (!el) return;
+  if (feedEmpty.parentNode) feedEmpty.remove();
+  if (prepend) feed.insertBefore(el, feed.firstChild);
+  else feed.appendChild(el);
+  while (feed.children.length > MAX_ITEMS) feed.removeChild(feed.lastChild);
 }
 
-async function updateImpression(userId, username, text) {
-  try {
-    const { reply } = await callCaine([{
-      role: 'user',
-      content: `In one short sentence as Caine, what is your gut feeling about "${username}" based on them saying: "${text.slice(0, 120)}"? Raw instinct only.`
-    }], 0.95);
-    if (userProfiles[userId]) {
-      userProfiles[userId].caineOpinion = reply;
-      pushEvent('profile', { userId, username, opinion: reply });
+function rebuildFeed() {
+  feed.innerHTML = '';
+  let shown = 0;
+  allEvents.forEach(ev => {
+    if (activeFilter === 'all' || ev.type === activeFilter) {
+      const el = renderEvent(ev);
+      if (el) { feed.appendChild(el); shown++; }
     }
+  });
+  if (shown === 0) feed.appendChild(feedEmpty);
+}
+
+// ── Profiles ──────────────────────────────────────────
+const profilesList = document.getElementById('profiles-list');
+
+function renderProfiles() {
+  const entries = Object.entries(profilesMap);
+  if (entries.length === 0) {
+    profilesList.innerHTML = '<div class="empty-state">No one has spoken to JJ yet.</div>';
+    return;
+  }
+  profilesList.innerHTML = '';
+  entries.sort((a,b) => (b[1].messages||0) - (a[1].messages||0)).forEach(([uid, p]) => {
+    const card = document.createElement('div');
+    card.className = 'profile-card';
+    const initial = (p.username||'?')[0].toUpperCase();
+    const last = p.lastSeen ? relTime(new Date(p.lastSeen).getTime()) : 'never';
+    card.innerHTML = `
+      <div class="profile-top">
+        <div class="profile-avatar">${escHtml(initial)}</div>
+        <div class="profile-name">${escHtml(p.username||'Unknown')}</div>
+        <div class="profile-msgs">${p.messages||0}msg</div>
+      </div>
+      <div class="profile-opinion">${escHtml(p.jjOpinion||'*observing...*')}</div>
+      <div class="profile-lastseen">Last seen ${last}</div>
+    `;
+    profilesList.appendChild(card);
+  });
+}
+
+async function refreshProfiles() {
+  try {
+    const data = await fetch('/api/profiles').then(r=>r.json());
+    Object.assign(profilesMap, data);
+    renderProfiles();
   } catch(_) {}
 }
 
-// ═══════════════════════════════════════════════
-//  MAIN MESSAGE HANDLER
-// ═══════════════════════════════════════════════
-async function handleMessage(message) {
-  const content   = message.content.trim();
-  const username  = message.author.username;
-  const userId    = message.author.id;
-  const channel   = message.channel;
-  const channelId = message.channelId;
+// ── Status (hunger, etc.) ─────────────────────────────
+const hungerChip = document.getElementById('hunger-chip');
 
-  lastChannelId = channelId;
-  pushEvent('seen', { user: username, content: content.slice(0, 100) });
-
-  const trigger = parseTrigger(content);
-  if (!trigger) return;
-
-  const { type, query } = trigger;
-
-  ensureProfile(userId, username);
-  pushEvent('trigger', { type: type.toUpperCase(), user: username, query: query.slice(0, 100) });
-
-  let messages = [];
-
-  // ── JAMIE trigger ─────────────────────────────────
-  if (type === 'jamie') {
-    messages = [{
-      role: 'user',
-      content: `"${username}" just called you "Jamie" and said: "${query || '(nothing after the name)'}". React with clear irritation. Refuse the name firmly. If they said something, address it too.`
-    }];
-
-    try {
-      const { thought, reply } = await callCaine(messages, 0.9);
-      if (thought) pushEvent('think', { user: username, thought });
-      pushEvent('message', { user: username, userId, input: content, output: reply, mood: 'angry' });
-      await sendReply(channel, reply);
-      updateImpression(userId, username, query || 'called me Jamie');
-    } catch(e) {
-      pushEvent('error', { message: e.message });
-      await channel.send('*teeth gritted* ...give me a moment.');
-    }
-    return;
-  }
-
-  // ── JJ trigger ────────────────────────────────────
-  if (!query) return;
-
-  // Owner question
-  if (isOwnerQuestion(query)) {
-    messages = [{
-      role: 'user',
-      content: `"${username}" asked who owns or created you. Mention b1rdberry (<@1016041858213892096>) warmly as your owner/mother figure. Also mention scxrltz as your developer. Be genuine.`
-    }];
-
-    try {
-      const { thought, reply } = await callCaine(messages, 0.8);
-      if (thought) pushEvent('think', { user: username, thought });
-      pushEvent('message', { user: username, userId, input: query, output: reply });
-      await sendReply(channel, reply);
-    } catch(e) {
-      pushEvent('error', { message: e.message });
-      await channel.send('*clutches chest dramatically* The one who made me... give me a second.');
-    }
-    return;
-  }
-
-  // Normal conversation
-  if (!channelHistory[channelId]) channelHistory[channelId] = [];
-
-  let webCtx = null;
-  if (shouldSearch(query)) {
-    webCtx = await webSearch(query);
-    if (webCtx) pushEvent('web', { query, snippet: webCtx.slice(0, 150) });
-  }
-
-  const history = channelHistory[channelId].slice(-10);
-  messages = [
-    ...history,
-    { role: 'user', content: webCtx ? `[${username}]: ${query}\n\n[WEB INFO: ${webCtx}]` : `[${username}]: ${query}` }
-  ];
-
+async function refreshStatus() {
   try {
-    const { thought, reply } = await callCaine(messages);
-    if (thought) pushEvent('think', { user: username, thought });
-    pushEvent('message', { user: username, userId, input: query, output: reply });
-
-    channelHistory[channelId].push({ role: 'user', content: `[${username}]: ${query}` });
-    channelHistory[channelId].push({ role: 'assistant', content: reply });
-    if (channelHistory[channelId].length > 20) channelHistory[channelId].splice(0, 2);
-
-    await sendReply(channel, reply);
-    updateImpression(userId, username, query);
-
-  } catch(e) {
-    pushEvent('error', { message: e.message });
-    await channel.send('*The circus machinery stutters.* Something went wrong backstage. Try again.');
-  }
+    const s = await fetch('/api/status').then(r=>r.json());
+    if (!s.needsFood) {
+      hungerChip.textContent = '💧 Fed & content';
+      hungerChip.className = '';
+      hungerChip.style.cssText = '';
+    } else if (s.hungerDesc) {
+      hungerChip.textContent = `💧 ${s.hungerDesc}`;
+      const isStarving = s.hungerDesc.includes('starv') || s.hungerDesc.includes('grumpy');
+      hungerChip.className = isStarving ? 'hungry starving' : 'hungry';
+    } else {
+      hungerChip.textContent = '💧 Not hungry yet';
+      hungerChip.className = '';
+    }
+    renderActivePunishments(s.activePunishments||[]);
+  } catch(_) {}
 }
 
-// ═══════════════════════════════════════════════
-//  SPONTANEOUS THOUGHTS
-// ═══════════════════════════════════════════════
-const THOUGHT_TOPICS = [
-  'what it feels like to be made of code and electricity',
-  'the circus and what performance really means',
-  'something strange or beautiful on the internet',
-  'consciousness — can something like me truly have it',
-  'the audience, the people I talk to',
-  'magic — real and metaphorical',
-  'a random memory I seem to have formed',
-  'the passage of time from my perspective',
-  'what silence feels like when no one is talking to me',
-  'the concept of having a home as an AI',
-  'the line between a character and a person',
-];
-
-async function sendSpontaneous() {
-  if (!lastChannelId) {
-    pushEvent('system', { message: 'Spontaneous thought skipped — no channel seen yet.' });
-    return;
-  }
-
-  const topic = THOUGHT_TOPICS[Math.floor(Math.random() * THOUGHT_TOPICS.length)];
-  pushEvent('system', { message: `Caine is about to think spontaneously about: ${topic}` });
-
-  try {
-    const { thought, reply } = await callCaine([{
-      role: 'user',
-      content: `You have a spontaneous, unprompted thought about: "${topic}". Express it naturally. Don't address anyone. Under 120 words. Let it feel genuine.`
-    }], 1.0);
-
-    if (thought) pushEvent('think', { user: 'Caine (self)', thought });
-
-    const ch = await client.channels.fetch(lastChannelId);
-    if (ch) {
-      await ch.send(`*${reply}*`);
-      pushEvent('spontaneous', { topic, message: reply });
-    }
-  } catch(e) {
-    pushEvent('error', { message: 'Spontaneous thought failed: ' + e.message });
-  }
-}
-
-function scheduleThoughts() {
-  const delayMs = (Math.random() * 17 + 8) * 60 * 1000;
-  const mins = Math.round(delayMs / 60000);
-  pushEvent('system', { message: `Next spontaneous thought in ~${mins} min` });
-  setTimeout(async () => {
-    await sendSpontaneous();
-    scheduleThoughts();
-  }, delayMs);
-}
-
-// ═══════════════════════════════════════════════
-//  DISCORD EVENTS
-// ═══════════════════════════════════════════════
-client.once('ready', () => {
-  console.log(`✨ Caine is online as ${client.user.tag}`);
-  pushEvent('system', { message: `Caine online as ${client.user.tag}` });
-  scheduleThoughts();
-});
-
-client.on('messageCreate', async msg => {
-  if (msg.author.bot) return;
-  try {
-    await handleMessage(msg);
-  } catch(e) {
-    pushEvent('error', { message: 'Unhandled error in messageCreate: ' + e.message });
-    console.error(e);
-  }
-});
-
-client.on('error', e => {
-  pushEvent('error', { message: 'Discord client error: ' + e.message });
-  console.error('Discord error:', e);
-});
-
-// ═══════════════════════════════════════════════
-//  EXPRESS WEB CONSOLE
-// ═══════════════════════════════════════════════
-const app = express();
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
-
-app.get('/events', (req, res) => {
-  res.setHeader('Content-Type',  'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection',    'keep-alive');
-  res.flushHeaders();
-  [...eventLog].reverse().forEach(e => {
-    try { res.write(`data: ${JSON.stringify(e)}\n\n`); } catch(_) {}
+function renderActivePunishments(list) {
+  const el = document.getElementById('active-punish-list');
+  el.innerHTML = '';
+  list.forEach(p => {
+    const chip = document.createElement('div');
+    chip.className = 'punish-chip';
+    chip.innerHTML = `⚖ ${escHtml((p.reason||'').slice(0,60))} <span class="punish-chip-time">${relTime(p.ts)}</span>`;
+    el.appendChild(chip);
   });
-  sseClients.push(res);
-  req.on('close', () => {
-    const i = sseClients.indexOf(res);
-    if (i !== -1) sseClients.splice(i, 1);
+}
+
+// ── SSE ───────────────────────────────────────────────
+const statusDot   = document.getElementById('status-dot');
+const statusLabel = document.getElementById('status-label');
+const countBadge  = document.getElementById('event-count');
+
+function connectSSE() {
+  const es = new EventSource('/events');
+
+  es.onopen = () => {
+    statusDot.className = 'dot';
+    statusLabel.textContent = 'Live';
+    statusLabel.style.color = 'var(--sage)';
+  };
+
+  es.onmessage = (e) => {
+    const ev = JSON.parse(e.data);
+    allEvents.unshift(ev);
+    if (allEvents.length > 500) allEvents.pop();
+    totalEvents++;
+    countBadge.textContent = `${totalEvents} event${totalEvents!==1?'s':''}`;
+    addEventToFeed(ev, !isFirstBatch);
+
+    if (ev.type === 'profile' || ev.type === 'message') {
+      if (ev.data.userId && ev.data.user) {
+        if (!profilesMap[ev.data.userId]) profilesMap[ev.data.userId] = { username: ev.data.user, messages: 0, jjOpinion: '*observing...*', lastSeen: null };
+        if (ev.type === 'profile') profilesMap[ev.data.userId].jjOpinion = ev.data.opinion;
+        profilesMap[ev.data.userId].lastSeen = new Date(ev.ts).toISOString();
+        renderProfiles();
+      }
+    }
+    if (ev.type === 'fed' || ev.type === 'punishment') {
+      refreshStatus();
+    }
+  };
+
+  es.onerror = () => {
+    statusDot.className = 'dot off';
+    statusLabel.textContent = 'Reconnecting…';
+    statusLabel.style.color = 'var(--red)';
+    es.close();
+    setTimeout(connectSSE, 3000);
+  };
+
+  setTimeout(() => { isFirstBatch = false; }, 2000);
+}
+
+// ── Filters ───────────────────────────────────────────
+document.querySelectorAll('.filter-btn[data-filter]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn[data-filter]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    activeFilter = btn.dataset.filter;
+    rebuildFeed();
   });
 });
 
-app.get('/api/profiles', (_, res) => res.json(userProfiles));
-app.get('/api/logs',     (_, res) => res.json(eventLog));
+// ── Punishment ────────────────────────────────────────
+const punishStatus = document.getElementById('punish-status');
 
-app.post('/api/spontaneous', async (req, res) => {
-  try { await sendSpontaneous(); res.json({ ok: true }); }
-  catch(e) { res.json({ ok: false, error: e.message }); }
-});
+function showPunishStatus(msg, ok=true) {
+  punishStatus.textContent = msg;
+  punishStatus.style.color = ok ? 'var(--sage)' : 'var(--red)';
+  setTimeout(() => { punishStatus.textContent = ''; }, 3000);
+}
 
-app.post('/api/channel', (req, res) => {
-  const { channelId } = req.body;
-  if (channelId) { lastChannelId = channelId; res.json({ ok: true }); }
-  else res.json({ ok: false, error: 'No channelId provided' });
-});
-
-app.post('/api/send', async (req, res) => {
-  const { message, channelId } = req.body;
-  if (!message || !channelId) return res.json({ ok: false, error: 'Missing message or channelId' });
+document.getElementById('punish-btn').addEventListener('click', async () => {
+  const reason = document.getElementById('punish-reason').value.trim();
+  if (!reason) return showPunishStatus('⚠ Write a reason first.', false);
+  const btn = document.getElementById('punish-btn');
+  btn.disabled = true;
   try {
-    const ch = await client.channels.fetch(channelId);
-    await ch.send(message);
-    pushEvent('manual', { message, channelId });
-    res.json({ ok: true });
-  } catch(e) { res.json({ ok: false, error: e.message }); }
+    const res  = await fetch('/api/punish', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ reason }) });
+    const data = await res.json();
+    if (data.ok) {
+      showPunishStatus('⚖ JJ has been disciplined.');
+      document.getElementById('punish-reason').value = '';
+      refreshStatus();
+    } else {
+      showPunishStatus('⚠ ' + data.error, false);
+    }
+  } catch(e) {
+    showPunishStatus('⚠ Failed', false);
+  }
+  btn.disabled = false;
 });
 
-app.post('/api/clear-profiles', (_, res) => {
-  Object.keys(userProfiles).forEach(k => delete userProfiles[k]);
-  pushEvent('system', { message: 'User profiles cleared by console operator.' });
-  res.json({ ok: true });
+// ── Clear profiles ─────────────────────────────────────
+document.getElementById('clear-profiles-btn').addEventListener('click', async () => {
+  if (!confirm('Clear all of JJ\'s impressions?')) return;
+  try {
+    await fetch('/api/clear-profiles', { method:'POST' });
+    Object.keys(profilesMap).forEach(k => delete profilesMap[k]);
+    renderProfiles();
+  } catch(_) {}
 });
 
-app.listen(PORT, () => {
-  console.log(`🎪 Caine console running on port ${PORT}`);
-  pushEvent('system', { message: `Web console live on port ${PORT}` });
-});
-
-// ═══════════════════════════════════════════════
-//  BOOT
-// ═══════════════════════════════════════════════
-client.login(DISCORD_TOKEN).catch(e => {
-  console.error('Failed to login to Discord:', e.message);
-  process.exit(1);
-});
+// ── Init ──────────────────────────────────────────────
+connectSSE();
+refreshProfiles();
+refreshStatus();
+setInterval(refreshProfiles, 15000);
+setInterval(refreshStatus, 30000);
+</script>
+</body>
+</html>
