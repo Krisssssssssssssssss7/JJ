@@ -93,7 +93,7 @@ async function callCaine(messages, temperature = 0.82) {
   const res = await groq.chat.completions.create({
     model: MODEL,
     messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
-    max_tokens: 6000,
+    max_tokens: 9999999999999999999999,
     temperature,
   });
 
