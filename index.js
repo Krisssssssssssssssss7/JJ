@@ -572,7 +572,7 @@ async function handleMessage(message) {
 
   } catch(e) {
     pushEvent('error', { message: e.message });
-    await channel.send('*The machinery stutters.* Something went wrong. Try again.');
+    await channel.send('*Sorry guys im just.. a little lost in thought');
   }
 }
 
