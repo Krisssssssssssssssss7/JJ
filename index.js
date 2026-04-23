@@ -179,7 +179,7 @@ async function callJJ(messages, temperature = 0.85, isNSFW = false) {
   const res = await groq.chat.completions.create({
     model: MODEL,
     messages: [{ role: 'system', content: buildSystemPrompt(isNSFW) }, ...messages],
-    max_tokens: 700,
+    max_tokens: 400,
     temperature,
   });
 
