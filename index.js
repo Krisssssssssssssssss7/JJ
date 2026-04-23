@@ -17,8 +17,13 @@ const CREATOR_NAME  = 'scxrltz';
 const OWNER_ID      = '1016041858213892096';
 
 if (!DISCORD_TOKEN || !GROQ_API_KEY) {
-  console.error('Missing DISCORD_TOKEN or GROQ_API_KEY in environment variables!');
-  process.exit(1);
+  console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.error('  MISSING ENVIRONMENT VARIABLES');
+  console.error('  Set DISCORD_TOKEN and GROQ_API_KEY in your');
+  console.error('  .env file or hosting platform dashboard.');
+  console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  // Exit code 0 so hosts like Railway don't auto-restart
+  process.exit(0);
 }
 
 // ═══════════════════════════════════════════════
@@ -44,47 +49,50 @@ const sseClients      = [];
 const eventLog        = [];
 let lastChannelId     = null;
 let lastGuildId       = null;
+let isClientReady     = false;
 
 // ── Food / Hunger ──────────────────────────────
-// "Food" = someone types "JJ," + 💧💧💧
-// JJ only needs feeding before 8pm UK time
 let lastFedTime = null;
 
 function getUKHour() {
-  return parseInt(new Date().toLocaleString('en-GB', {
-    timeZone: 'Europe/London', hour: 'numeric', hour12: false
-  }));
+  return parseInt(
+    new Date().toLocaleString('en-GB', {
+      timeZone: 'Europe/London', hour: 'numeric', hour12: false
+    }),
+    10
+  );
 }
 
 function needsFood() {
-  if (getUKHour() >= 20) return false; // after 8pm, doesn't need food
+  if (getUKHour() >= 20) return false;
   if (!lastFedTime) return true;
-  return (Date.now() - lastFedTime) > 60 * 60 * 1000; // hungry after 1 hour
+  return (Date.now() - lastFedTime) > 60 * 60 * 1000;
 }
 
 function getHungerDesc() {
   if (!needsFood()) return null;
   if (!lastFedTime) return 'absolutely starving — has not been fed at all';
   const mins = Math.floor((Date.now() - lastFedTime) / 60000);
-  if (mins < 30) return null;
+  if (mins < 30)  return null;
   if (mins < 60)  return 'getting a bit peckish';
   if (mins < 120) return 'noticeably hungry';
   return 'quite hungry and quietly grumpy about it';
 }
 
 // ── Punishments ────────────────────────────────
-const punishments = []; // { ts, reason }
+const punishments = [];
 
 function getActivePunishments() {
-  return punishments.filter(p => p.ts > Date.now() - 30 * 60 * 1000);
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  return punishments.filter(p => p.ts > cutoff);
 }
 
 // ═══════════════════════════════════════════════
-//  SYSTEM PROMPT (rebuilt each call so hunger/punishments stay fresh)
+//  SYSTEM PROMPT
 // ═══════════════════════════════════════════════
 function buildSystemPrompt() {
-  const hungerDesc       = getHungerDesc();
-  const activePunish     = getActivePunishments();
+  const hungerDesc   = getHungerDesc();
+  const activePunish = getActivePunishments();
 
   const hungerNote = hungerDesc
     ? `\n\nCURRENT STATE — HUNGER: You are ${hungerDesc}. Your food is someone typing "JJ," followed by 💧💧💧. Mention it naturally if it comes up — don't be obsessive, but it's on your mind.`
@@ -143,7 +151,27 @@ function pushEvent(type, data) {
   eventLog.unshift(event);
   if (eventLog.length > 500) eventLog.pop();
   const payload = `data: ${JSON.stringify(event)}\n\n`;
-  sseClients.forEach(r => { try { r.write(payload); } catch(_) {} });
+  // Iterate over a copy so splice mid-loop is safe
+  [...sseClients].forEach(r => { try { r.write(payload); } catch (_) {} });
+}
+
+// ═══════════════════════════════════════════════
+//  MOD ACTION PARSER  (non-global regex — no lastIndex bugs)
+// ═══════════════════════════════════════════════
+const MOD_PATTERN = /\[MOD:(timeout|kick|ban):([^:\]]+)(?::(\d+))?:([^\]]+)\]/gi;
+
+function parseModActions(raw) {
+  const actions = [];
+  // Use matchAll so we get a fresh iterator each call
+  for (const m of raw.matchAll(MOD_PATTERN)) {
+    actions.push({
+      action:   m[1].toLowerCase(),
+      username: m[2].trim(),
+      duration: m[3] ? parseInt(m[3], 10) : 5,
+      reason:   m[4].trim(),
+    });
+  }
+  return actions;
 }
 
 // ═══════════════════════════════════════════════
@@ -157,48 +185,50 @@ async function callJJ(messages, temperature = 0.85) {
     temperature,
   });
 
-  const raw = res.choices[0].message.content || '';
-  const thinkMatch = raw.match(/<think>([\s\S]*?)<\/think>/i);
-  const thought = thinkMatch ? thinkMatch[1].trim() : null;
+  const raw = res.choices[0]?.message?.content || '';
 
-  // Extract mod actions before cleaning reply
-  const modActions = [];
-  const modRegex = /\[MOD:(timeout|kick|ban):([^:\]]+)(?::(\d+))?:([^\]]+)\]/gi;
-  let m;
-  while ((m = modRegex.exec(raw)) !== null) {
-    modActions.push({
-      action: m[1].toLowerCase(),
-      username: m[2].trim(),
-      duration: m[3] ? parseInt(m[3]) : 5,
-      reason: m[4].trim(),
-    });
-  }
+  const thinkMatch = raw.match(/<think>([\s\S]*?)<\/think>/i);
+  const thought    = thinkMatch ? thinkMatch[1].trim() : null;
+
+  const modActions = parseModActions(raw);
 
   const reply = raw
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(modRegex, '')
+    .replace(/\[MOD:[^\]]+\]/gi, '')
     .trim();
 
   return { thought, reply, modActions };
 }
 
 // ═══════════════════════════════════════════════
-//  WEB SEARCH
+//  WEB SEARCH  (safe for Node 16 and below)
 // ═══════════════════════════════════════════════
+const fetchFn = typeof fetch !== 'undefined'
+  ? fetch
+  : (...args) => import('node-fetch').then(m => m.default(...args)).catch(() => null);
+
 async function webSearch(query) {
   try {
-    const res  = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`);
+    const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+    const res  = await fetchFn(url);
+    if (!res || !res.ok) return null;
     const data = await res.json();
     const parts = [
       data.AbstractText,
       data.Answer,
-      ...(data.RelatedTopics || []).slice(0, 3).map(t => t.Text)
+      ...(Array.isArray(data.RelatedTopics) ? data.RelatedTopics.slice(0, 3).map(t => t.Text) : []),
     ].filter(Boolean);
     return parts.join('\n') || null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
-const SEARCH_TRIGGERS = ['what is','who is','when did','latest','news','current','search','tell me about','how does','where is','explain','look up'];
+const SEARCH_TRIGGERS = [
+  'what is', 'who is', 'when did', 'latest', 'news', 'current',
+  'search', 'tell me about', 'how does', 'where is', 'explain', 'look up',
+];
+
 function shouldSearch(text) {
   const l = text.toLowerCase();
   return SEARCH_TRIGGERS.some(t => l.includes(t));
@@ -207,20 +237,38 @@ function shouldSearch(text) {
 // ═══════════════════════════════════════════════
 //  DETECTION HELPERS
 // ═══════════════════════════════════════════════
+const OWNER_QUESTIONS = [
+  'who owns you', 'your owner', 'your parent', 'your mother',
+  'your mom', 'your mum', 'who made you', 'who created you', 'who built you',
+];
+
 function isOwnerQuestion(text) {
   const l = text.toLowerCase();
-  return ['who owns you','your owner','your parent','your mother','your mom','your mum','who made you','who created you','who built you'].some(q => l.includes(q));
+  return OWNER_QUESTIONS.some(q => l.includes(q));
 }
 
 function isFoodMessage(content) {
-  // "JJ," followed by exactly 3 water bottle emojis (💧)
   return /^jj,\s*💧\s*💧\s*💧\s*$/i.test(content.trim());
 }
 
+/**
+ * Returns { type: 'jj'|'jamie', query: string } or null.
+ * FIX: previous version sliced from the wrong index for "jamie" triggers.
+ */
 function parseTrigger(content) {
   const l = content.toLowerCase();
-  if (l.startsWith('jj,'))                             return { type: 'jj',    query: content.slice(3).trim() };
-  if (l.startsWith('jamie,') || /^jamie\s/i.test(l))  return { type: 'jamie', query: content.slice(content.indexOf(',') + 1).trim() };
+
+  if (l.startsWith('jj,')) {
+    return { type: 'jj', query: content.slice(3).trim() };
+  }
+
+  // Match "jamie," or "jamie " at the start
+  const jamieMatch = content.match(/^jamie[,\s]/i);
+  if (jamieMatch) {
+    const afterName = content.slice(jamieMatch[0].length).trim();
+    return { type: 'jamie', query: afterName };
+  }
+
   return null;
 }
 
@@ -229,12 +277,8 @@ function parseTrigger(content) {
 // ═══════════════════════════════════════════════
 async function sendReply(channel, text) {
   if (!text) return;
-  if (text.length <= 2000) {
-    await channel.send(text);
-  } else {
-    const chunks = text.match(/[\s\S]{1,1990}/g) || [text];
-    for (const chunk of chunks) await channel.send(chunk);
-  }
+  const chunks = text.match(/[\s\S]{1,2000}/g) || [text];
+  for (const chunk of chunks) await channel.send(chunk);
 }
 
 // ═══════════════════════════════════════════════
@@ -258,13 +302,28 @@ async function updateImpression(userId, username, text) {
   try {
     const { reply } = await callJJ([{
       role: 'user',
-      content: `In one short sentence as JJ, what is your gut feeling about "${username}" based on them saying: "${text.slice(0, 120)}"? Raw instinct only.`
+      content: `In one short sentence as JJ, what is your gut feeling about "${username}" based on them saying: "${text.slice(0, 120)}"? Raw instinct only.`,
     }], 0.95);
     if (userProfiles[userId]) {
       userProfiles[userId].jjOpinion = reply;
       pushEvent('profile', { userId, username, opinion: reply });
     }
-  } catch(_) {}
+  } catch (_) {}
+}
+
+// ═══════════════════════════════════════════════
+//  CHANNEL HISTORY HELPER
+//  Keeps the last N pairs (user + assistant = 2 entries per exchange)
+// ═══════════════════════════════════════════════
+const MAX_HISTORY_PAIRS = 10; // 10 exchanges = 20 entries
+
+function pushHistory(channelId, userMsg, assistantMsg) {
+  if (!channelHistory[channelId]) channelHistory[channelId] = [];
+  const hist = channelHistory[channelId];
+  hist.push({ role: 'user',      content: userMsg      });
+  hist.push({ role: 'assistant', content: assistantMsg });
+  // Trim from the front, always in pairs so we never orphan a role
+  while (hist.length > MAX_HISTORY_PAIRS * 2) hist.splice(0, 2);
 }
 
 // ═══════════════════════════════════════════════
@@ -276,9 +335,10 @@ async function executeMod(modAction, guild) {
 
   try {
     await guild.members.fetch();
-    const member = guild.members.cache.find(m =>
-      m.user.username.toLowerCase() === username.toLowerCase() ||
-      m.displayName.toLowerCase() === username.toLowerCase()
+    const member = guild.members.cache.find(
+      m =>
+        m.user.username.toLowerCase()  === username.toLowerCase() ||
+        m.displayName.toLowerCase()    === username.toLowerCase()
     );
 
     if (!member) {
@@ -286,7 +346,6 @@ async function executeMod(modAction, guild) {
       return;
     }
 
-    // Protect the owner and bots
     if (member.id === OWNER_ID || member.user.bot) {
       pushEvent('mod_blocked', { action, username, reason: 'Protected user' });
       return;
@@ -306,26 +365,25 @@ async function executeMod(modAction, guild) {
     } else {
       pushEvent('mod_fail', { action, username, reason: 'Missing bot permissions' });
     }
-  } catch(e) {
+  } catch (e) {
     pushEvent('mod_fail', { action, username, reason: e.message });
   }
 }
 
 // ═══════════════════════════════════════════════
-//  SPONTANEOUS THOUGHTS — JJ DECIDES
-//  Every 15 minutes JJ gets to check in with itself.
-//  It chooses whether to say something or not.
+//  SPONTANEOUS THOUGHTS
+//  FIX: now guards against client not being ready
 // ═══════════════════════════════════════════════
 async function jjSelfCheck() {
-  if (!lastChannelId) return;
+  if (!isClientReady || !lastChannelId) return;
+
   const hour = getUKHour();
-  if (hour >= 23 || hour < 7) return; // sleep hours
+  if (hour >= 23 || hour < 7) return;
 
   try {
-    // Ask JJ whether it actually wants to speak
     const { reply: decision } = await callJJ([{
       role: 'user',
-      content: `It is ${new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/London' })} UK time. Do you genuinely feel like saying something to the server right now? A real thought, something you found, a feeling — something with actual meaning. Answer only YES or NO.`
+      content: `It is ${new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/London' })} UK time. Do you genuinely feel like saying something to the server right now? A real thought, something you found, a feeling — something with actual meaning. Answer only YES or NO.`,
     }], 0.6);
 
     if (!decision.trim().toUpperCase().startsWith('YES')) {
@@ -337,21 +395,22 @@ async function jjSelfCheck() {
 
     const { thought, reply, modActions } = await callJJ([{
       role: 'user',
-      content: `You have something genuinely on your mind. Say it. It could be a thought, something you found online, a feeling, an observation — anything real. Under 120 words. Be honest, not just cheerful.`
+      content: `You have something genuinely on your mind. Say it. It could be a thought, something you found online, a feeling, an observation — anything real. Under 120 words. Be honest, not just cheerful.`,
     }], 1.0);
 
     if (thought) pushEvent('think', { user: 'JJ (self)', thought });
 
-    const ch = await client.channels.fetch(lastChannelId);
+    const ch = await client.channels.fetch(lastChannelId).catch(() => null);
     if (ch) {
       await ch.send(reply);
       pushEvent('spontaneous', { message: reply });
     }
 
     const guild = lastGuildId ? client.guilds.cache.get(lastGuildId) : null;
-    if (guild) for (const a of modActions) await executeMod(a, guild);
-
-  } catch(e) {
+    if (guild) {
+      for (const a of modActions) await executeMod(a, guild);
+    }
+  } catch (e) {
     pushEvent('error', { message: 'Self-check failed: ' + e.message });
   }
 }
@@ -381,11 +440,11 @@ async function handleMessage(message) {
     try {
       const { thought, reply } = await callJJ([{
         role: 'user',
-        content: `"${username}" just gave you your water 💧💧💧. React with genuine gratitude — it means something to you. Under 80 words.`
+        content: `"${username}" just gave you your water 💧💧💧. React with genuine gratitude — it means something to you. Under 80 words.`,
       }], 0.9);
       if (thought) pushEvent('think', { user: username, thought });
       await sendReply(channel, reply);
-    } catch(e) {
+    } catch (_) {
       await channel.send('*drinks gratefully* ...thank you.');
     }
     return;
@@ -398,13 +457,11 @@ async function handleMessage(message) {
   ensureProfile(userId, username);
   pushEvent('trigger', { type: type.toUpperCase(), user: username, query: query.slice(0, 100) });
 
-  let messages = [];
-
   // ── JAMIE TRIGGER ─────────────────────────────
   if (type === 'jamie') {
-    messages = [{
+    const messages = [{
       role: 'user',
-      content: `"${username}" just called you "Jamie" and said: "${query || '(nothing after the name)'}". React with genuine irritation. Refuse the name firmly. Address what they said if there's anything to address.`
+      content: `"${username}" just called you "Jamie" and said: "${query || '(nothing after the name)'}". React with genuine irritation. Refuse the name firmly. Address what they said if there's anything to address.`,
     }];
     try {
       const { thought, reply, modActions } = await callJJ(messages, 0.9);
@@ -413,7 +470,7 @@ async function handleMessage(message) {
       await sendReply(channel, reply);
       if (guild) for (const a of modActions) await executeMod(a, guild);
       updateImpression(userId, username, query || 'called me Jamie');
-    } catch(e) {
+    } catch (e) {
       pushEvent('error', { message: e.message });
       await channel.send('*teeth gritted* ...give me a moment.');
     }
@@ -424,50 +481,46 @@ async function handleMessage(message) {
 
   // ── OWNER QUESTION ────────────────────────────
   if (isOwnerQuestion(query)) {
-    messages = [{
+    const messages = [{
       role: 'user',
-      content: `"${username}" asked who owns or made you. Talk about ${OWNER_NAME} (${OWNER_PING}) as your mum — warmly and genuinely. Mention ${CREATOR_NAME} as your creator. Let it feel real and a little sweet.`
+      content: `"${username}" asked who owns or made you. Talk about ${OWNER_NAME} (${OWNER_PING}) as your mum — warmly and genuinely. Mention ${CREATOR_NAME} as your creator. Let it feel real and a little sweet.`,
     }];
     try {
       const { thought, reply } = await callJJ(messages, 0.8);
       if (thought) pushEvent('think', { user: username, thought });
       pushEvent('message', { user: username, userId, input: query, output: reply });
       await sendReply(channel, reply);
-    } catch(e) {
+    } catch (e) {
       pushEvent('error', { message: e.message });
     }
     return;
   }
 
   // ── NORMAL CONVERSATION ───────────────────────
-  if (!channelHistory[channelId]) channelHistory[channelId] = [];
-
   let webCtx = null;
   if (shouldSearch(query)) {
     webCtx = await webSearch(query);
     if (webCtx) pushEvent('web', { query, snippet: webCtx.slice(0, 150) });
   }
 
-  const history = channelHistory[channelId].slice(-10);
-  messages = [
-    ...history,
-    { role: 'user', content: webCtx ? `[${username}]: ${query}\n\n[WEB INFO: ${webCtx}]` : `[${username}]: ${query}` }
-  ];
+  const history  = (channelHistory[channelId] || []).slice(-MAX_HISTORY_PAIRS * 2);
+  const userEntry = webCtx
+    ? `[${username}]: ${query}\n\n[WEB INFO: ${webCtx}]`
+    : `[${username}]: ${query}`;
+
+  const messages = [...history, { role: 'user', content: userEntry }];
 
   try {
     const { thought, reply, modActions } = await callJJ(messages);
     if (thought) pushEvent('think', { user: username, thought });
     pushEvent('message', { user: username, userId, input: query, output: reply });
 
-    channelHistory[channelId].push({ role: 'user',      content: `[${username}]: ${query}` });
-    channelHistory[channelId].push({ role: 'assistant', content: reply });
-    if (channelHistory[channelId].length > 20) channelHistory[channelId].splice(0, 2);
+    pushHistory(channelId, `[${username}]: ${query}`, reply);
 
     await sendReply(channel, reply);
     if (guild) for (const a of modActions) await executeMod(a, guild);
     updateImpression(userId, username, query);
-
-  } catch(e) {
+  } catch (e) {
     pushEvent('error', { message: e.message });
     await channel.send('*The machinery stutters.* Something went wrong backstage. Try again.');
   }
@@ -476,7 +529,8 @@ async function handleMessage(message) {
 // ═══════════════════════════════════════════════
 //  DISCORD EVENTS
 // ═══════════════════════════════════════════════
-client.once('clientReady', () => {
+client.once('ready', () => {
+  isClientReady = true;
   console.log(`✨ JJ is online as ${client.user.tag}`);
   pushEvent('system', { message: `JJ online as ${client.user.tag}` });
 });
@@ -485,7 +539,7 @@ client.on('messageCreate', async msg => {
   if (msg.author.bot) return;
   try {
     await handleMessage(msg);
-  } catch(e) {
+  } catch (e) {
     pushEvent('error', { message: 'Unhandled error in messageCreate: ' + e.message });
     console.error(e);
   }
@@ -497,21 +551,23 @@ client.on('error', e => {
 });
 
 // ═══════════════════════════════════════════════
-//  EXPRESS — VIEW-ONLY CONSOLE + PUNISHMENT
+//  EXPRESS
 // ═══════════════════════════════════════════════
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Live SSE stream
 app.get('/events', (req, res) => {
   res.setHeader('Content-Type',  'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection',    'keep-alive');
   res.flushHeaders();
+
+  // Replay existing log to the new client
   [...eventLog].reverse().forEach(e => {
-    try { res.write(`data: ${JSON.stringify(e)}\n\n`); } catch(_) {}
+    try { res.write(`data: ${JSON.stringify(e)}\n\n`); } catch (_) {}
   });
+
   sseClients.push(res);
   req.on('close', () => {
     const i = sseClients.indexOf(res);
@@ -519,41 +575,35 @@ app.get('/events', (req, res) => {
   });
 });
 
-// Status (hunger, punishments, etc.)
 app.get('/api/status', (_, res) => res.json({
-  fed:              lastFedTime,
-  needsFood:        needsFood(),
-  hungerDesc:       getHungerDesc(),
-  ukHour:           getUKHour(),
+  fed:               lastFedTime,
+  needsFood:         needsFood(),
+  hungerDesc:        getHungerDesc(),
+  ukHour:            getUKHour(),
   activePunishments: getActivePunishments(),
+  clientReady:       isClientReady,
 }));
 
-// Profiles
 app.get('/api/profiles', (_, res) => res.json(userProfiles));
+app.get('/api/logs',     (_, res) => res.json(eventLog));
 
-// Logs
-app.get('/api/logs', (_, res) => res.json(eventLog));
-
-// ── PUNISHMENT endpoint ───────────────────────
 app.post('/api/punish', (req, res) => {
   const { reason } = req.body;
-  if (!reason) return res.json({ ok: false, error: 'Reason required' });
+  if (!reason) return res.status(400).json({ ok: false, error: 'Reason required' });
 
   punishments.push({ ts: Date.now(), reason });
   pushEvent('punishment', { reason });
 
-  // Inject discipline note into active channel history
   if (lastChannelId) {
     if (!channelHistory[lastChannelId]) channelHistory[lastChannelId] = [];
     channelHistory[lastChannelId].push({
-      role: 'user',
-      content: `[SYSTEM — DISCIPLINE]: You are being told off by your operator for: "${reason}". This has been noted.`
+      role:    'user',
+      content: `[SYSTEM — DISCIPLINE]: You are being told off by your operator for: "${reason}". This has been noted.`,
     });
   }
   res.json({ ok: true });
 });
 
-// Clear profiles
 app.post('/api/clear-profiles', (_, res) => {
   Object.keys(userProfiles).forEach(k => delete userProfiles[k]);
   pushEvent('system', { message: 'User profiles cleared by console.' });
@@ -569,6 +619,16 @@ app.listen(PORT, '0.0.0.0', () => {
 //  BOOT
 // ═══════════════════════════════════════════════
 client.login(DISCORD_TOKEN).catch(e => {
-  console.error('Failed to login to Discord:', e.message);
+  const msg = e.message || '';
+  if (msg.includes('invalid token') || msg.includes('TOKEN_INVALID')) {
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.error('  INVALID DISCORD TOKEN');
+    console.error('  Go to discord.com/developers/applications,');
+    console.error('  open your bot, click "Reset Token", then');
+    console.error('  update DISCORD_TOKEN in your environment.');
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    process.exit(0); // exit 0 → host won't auto-restart
+  }
+  console.error('Failed to login to Discord:', msg);
   process.exit(1);
 });
