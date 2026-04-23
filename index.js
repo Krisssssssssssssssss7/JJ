@@ -11,7 +11,7 @@ const fs = require('fs');
 const DISCORD_TOKEN  = process.env.DISCORD_TOKEN;
 const GROQ_API_KEY   = process.env.GROQ_API_KEY;
 const PORT           = process.env.PORT || 3000;
-const MODEL          = 'llama-3.3-70b-versatile';
+const MODEL          = 'llama-3.1-8b-instant';
 
 const OWNER_NAME     = 'b1rdberry';
 const OWNER_ID       = '1016041858213892096';
