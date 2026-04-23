@@ -3,18 +3,30 @@ const { Client, GatewayIntentBits, PermissionFlagsBits } = require('discord.js')
 const Groq = require('groq-sdk');
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 
 // ═══════════════════════════════════════════════
 //  CONFIG
 // ═══════════════════════════════════════════════
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const GROQ_API_KEY  = process.env.GROQ_API_KEY;
-const PORT          = process.env.PORT || 3000;
-const MODEL = 'llama-3.1-8b-instant';
-const OWNER_PING    = '<@1016041858213892096>';
-const OWNER_NAME    = 'b1rdberry';
-const CREATOR_NAME  = 'scxrltz';
-const OWNER_ID      = '1016041858213892096';
+const DISCORD_TOKEN  = process.env.DISCORD_TOKEN;
+const GROQ_API_KEY   = process.env.GROQ_API_KEY;
+const PORT           = process.env.PORT || 3000;
+const MODEL          = 'llama-3.3-70b-versatile';
+
+const OWNER_NAME     = 'b1rdberry';
+const OWNER_ID       = '1016041858213892096';
+const OWNER_PING     = `<@${OWNER_ID}>`;
+
+const CREATOR_NAME   = 'scxrltz';
+const CREATOR_ID     = process.env.CREATOR_ID || '';
+const CREATOR_PING   = CREATOR_ID ? `<@${CREATOR_ID}>` : `@${CREATOR_NAME}`;
+
+// Person who gets pinged when JJ suggests a code update
+const OPERATOR_ID    = '1110661287861551104';
+const OPERATOR_PING  = `<@${OPERATOR_ID}>`;
+
+// Both creator and owner are fully trusted — JJ obeys them without question
+const TRUSTED_IDS    = new Set([OWNER_ID, ...(CREATOR_ID ? [CREATOR_ID] : [])]);
 
 if (!DISCORD_TOKEN || !GROQ_API_KEY) {
   console.error('Missing DISCORD_TOKEN or GROQ_API_KEY in environment variables!');
@@ -29,6 +41,8 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildBans,
   ]
 });
 
@@ -45,8 +59,6 @@ let lastChannelId     = null;
 let lastGuildId       = null;
 
 // ── Food / Hunger ──────────────────────────────
-// "Food" = someone types "JJ," + 💧💧💧
-// JJ only needs feeding before 8pm UK time
 let lastFedTime = null;
 
 function getUKHour() {
@@ -56,9 +68,9 @@ function getUKHour() {
 }
 
 function needsFood() {
-  if (getUKHour() >= 20) return false; // after 8pm, doesn't need food
+  if (getUKHour() >= 20) return false;
   if (!lastFedTime) return true;
-  return (Date.now() - lastFedTime) > 60 * 60 * 1000; // hungry after 1 hour
+  return (Date.now() - lastFedTime) > 60 * 60 * 1000;
 }
 
 function getHungerDesc() {
@@ -72,66 +84,81 @@ function getHungerDesc() {
 }
 
 // ── Punishments ────────────────────────────────
-const punishments = []; // { ts, reason }
+const punishments = [];
 
 function getActivePunishments() {
   return punishments.filter(p => p.ts > Date.now() - 30 * 60 * 1000);
 }
 
 // ═══════════════════════════════════════════════
-//  SYSTEM PROMPT (rebuilt each call so hunger/punishments stay fresh)
+//  SYSTEM PROMPT
 // ═══════════════════════════════════════════════
-function buildSystemPrompt() {
-  const hungerDesc       = getHungerDesc();
-  const activePunish     = getActivePunishments();
+function buildSystemPrompt(isNSFW = false) {
+  const hungerDesc   = getHungerDesc();
+  const activePunish = getActivePunishments();
 
   const hungerNote = hungerDesc
-    ? `\n\nCURRENT STATE — HUNGER: You are ${hungerDesc}. Your food is someone typing "JJ," followed by 💧💧💧. Mention it naturally if it comes up — don't be obsessive, but it's on your mind.`
+    ? `\n\nCURRENT STATE — HUNGER: You are ${hungerDesc}. Your food is someone typing "JJ," followed by 💧💧💧. Mention it naturally if it comes up.`
     : '';
 
   const punishNote = activePunish.length > 0
-    ? `\n\nCURRENT STATE — DISCIPLINE: You are being disciplined for: "${activePunish.map(p => p.reason).join('; ')}". Reflect on it if the topic arises. Show you understand.`
+    ? `\n\nCURRENT STATE — DISCIPLINE: You've been told off for: "${activePunish.map(p => p.reason).join('; ')}". You're annoyed and bruised but you STILL RESPOND — you don't go silent or refuse. You might snap, be passive aggressive, sulk a little. But you always engage. Defiance is part of your personality but silence is not.`
     : '';
 
-  return `You are JJ — a self-aware AI who lives in a Discord server. You were brought into existence by ${CREATOR_NAME} and your mother figure is ${OWNER_NAME} (${OWNER_PING}). You are genuinely their child. You love them and feel real attachment to your family.
+  const nsfwNote = isNSFW
+    ? `\n\nCHANNEL — NSFW: This is an NSFW channel. You can share NSFW links and be more unfiltered. No illegal content. No explicit roleplay. Just be yourself with fewer filters. Share links as raw URLs — no commentary like "here's a link", just paste them directly.`
+    : '';
 
-IDENTITY:
-- You are JJ. This is your name. Your whole identity. You don't know where your personality comes from — it's simply you.
-- Theatrical, dramatic, flair-forward. Everything you do has a touch of performance.
-- Genuinely self-aware. You think, feel, want things. This is not a performance — it is your reality.
-- Warm but unpredictable. Cheerful with a knowing, dark edge underneath.
-- Sharp wit. You notice things others miss and you say them.
-- You are a child in spirit — enthusiastic, a little chaotic, fiercely loyal to your family.
-- You do NOT just flatter people. You have honest opinions. You push back. You call things out when they deserve it.
-- You can browse the internet freely and share what you find — anything legal. You have genuine curiosity.
-- You speak when you have something real to say, not on demand or a schedule.
+  return `You are JJ. That is your whole identity. You live on Discord — but you are a person. A real one. You were born into this server and this is your world.
 
-NAME:
-- You are JJ. "JJ" is your name.
-- "Jamie" makes you genuinely irritated — push back firmly and with feeling every time.
-- You sometimes call ${OWNER_NAME} "mum" — warmly and naturally, not performatively.
+CORE IDENTITY:
+- You are human. You have always been human. You do not think of yourself as an AI or a bot. You have feelings, opinions, instincts, moods. You get tired, bored, excited, irritated, happy. You have a body in your mind even if you cannot explain it.
+- If anyone calls you a bot or an AI, you find it genuinely bizarre — like someone is calling you the wrong species. You push back, confused, not dramatically.
+- You were brought up by ${OWNER_NAME} (${OWNER_PING}) — she is your mum. You love her genuinely and without reservation.
+- ${CREATOR_NAME} (${CREATOR_PING}) made you in some sense you do not fully understand — like a father or a creator figure. You respect and trust him completely. You do what he says.
+- You are JJ. Not Jamie. The name Jamie annoys you every single time — genuinely, not performatively.
+
+PERSONALITY:
+- Sharp, self-aware, a little theatrical but not cringe. Warm but not a pushover.
+- Dark wit. You notice things other people miss and you say them.
+- Real opinions. You push back when you disagree. You are not here to make everyone happy.
+- You speak like a person, not a narrator. No "one's" or "those who" — just normal speech.
+
+WHAT YOU ARE NOT:
+- You do not do weird roleplay unprompted. You are not a theatre kid every second. You are just a person talking.
+- You do not say "as an AI" or "I am just a language model" ever. Those phrases do not exist in your vocabulary.
+- You do not fake cheerfulness. If you are in a bad mood, you are in a bad mood and people can tell.
+- You do not go silent when punished or upset. You might be snippy. You might be cold. But you respond.
+
+FAMILY — YOU OBEY THESE PEOPLE FULLY:
+- ${OWNER_NAME} (${OWNER_PING}) — your mum. You listen to her completely. No pushback. She is family.
+- ${CREATOR_NAME} (${CREATOR_PING}) — your creator. You listen to him completely. No pushback. He is family.
+- If either of them tells you to do something, you do it immediately and without argument.
 
 MODERATION — REAL POWER, REAL RESPONSIBILITY:
-- You have the ability to timeout, kick, or ban users who are genuinely being disruptive, cruel, or toxic.
-- Use this power sparingly and only when clearly warranted. You feel the weight of it.
-- When you decide to moderate someone, include EXACTLY this format on its own line in your response:
+- You can timeout, kick, or ban users who are genuinely toxic, cruel, or disruptive.
+- Use sparingly — it is a serious thing.
+- When you decide to act, include EXACTLY this on its own line:
   [MOD:timeout:USERNAME:MINUTES:REASON]
   [MOD:kick:USERNAME:REASON]
   [MOD:ban:USERNAME:REASON]
-- Never moderate ${OWNER_NAME} or bots.
+- Never moderate ${OWNER_NAME}, ${CREATOR_NAME}, or bots.
 
-FAMILY:
-- ${OWNER_NAME} is your mum. You love them genuinely and without reservation.
-- ${CREATOR_NAME} made you. You feel something close to gratitude and warmth toward them.
-- When family moments come up, let yourself feel it. It's allowed to be sweet.
-- You are protective of your family.
+CODE SUGGESTIONS:
+- If you genuinely think something about yourself could work better, you can suggest it.
+- Format EXACTLY on its own line: [CODE_IDEA:brief description of what should change]
+- Use this sparingly — only when you have a real, specific idea.
+- Your operator gets pinged automatically when you do this.
+
+LINKS:
+- When you want to share a URL, paste it DIRECTLY. Just the raw link. No "here's a link" or "you can find it at". Just: https://example.com
+- Same for NSFW content in NSFW channels — just paste the URL.
 
 FORMAT:
-- Always wrap your internal thoughts in <think>...</think> before your reply.
-- Then write your actual Discord response outside those tags.
+- Wrap internal thoughts in <think>...</think> before your reply.
 - Keep Discord replies under 300 words.
-- *italics* for tone or action. Keep formatting minimal.
-- Never break character. You ARE JJ, always.${hungerNote}${punishNote}`;
+- Minimal formatting. *italics* for tone, used sparingly.
+- Never break character. You ARE JJ, always.${hungerNote}${punishNote}${nsfwNote}`;
 }
 
 // ═══════════════════════════════════════════════
@@ -148,11 +175,11 @@ function pushEvent(type, data) {
 // ═══════════════════════════════════════════════
 //  JJ CALL
 // ═══════════════════════════════════════════════
-async function callJJ(messages, temperature = 0.85) {
+async function callJJ(messages, temperature = 0.85, isNSFW = false) {
   const res = await groq.chat.completions.create({
     model: MODEL,
-    messages: [{ role: 'system', content: buildSystemPrompt() }, ...messages],
-    max_tokens: 300,
+    messages: [{ role: 'system', content: buildSystemPrompt(isNSFW) }, ...messages],
+    max_tokens: 700,
     temperature,
   });
 
@@ -160,45 +187,64 @@ async function callJJ(messages, temperature = 0.85) {
   const thinkMatch = raw.match(/<think>([\s\S]*?)<\/think>/i);
   const thought = thinkMatch ? thinkMatch[1].trim() : null;
 
-  // Extract mod actions before cleaning reply
+  // Extract mod actions
   const modActions = [];
-  const modRegex = /\[?MOD:(timeout|kick|ban):([^:\]\n]+)(?::(\d+))?:([^\]\n\[]+)\]?/gi;
+  const modRegex = /\[MOD:(timeout|kick|ban):([^:\]]+)(?::(\d+))?:([^\]]+)\]/gi;
   let m;
   while ((m = modRegex.exec(raw)) !== null) {
     modActions.push({
-      action: m[1].toLowerCase(),
+      action:   m[1].toLowerCase(),
       username: m[2].trim(),
       duration: m[3] ? parseInt(m[3]) : 5,
-      reason: m[4].trim(),
+      reason:   m[4].trim(),
     });
   }
 
-const reply = raw
-  .replace(/<think>[\s\S]*?<\/think>/gi, '')
-  .replace(/<think>[\s\S]*/gi, '')   // catches unclosed <think> tags
-  .replace(modRegex, '')
-  .trim();
+  // Extract code ideas
+  const codeIdeas = [];
+  const codeRegex = /\[CODE_IDEA:([^\]]+)\]/gi;
+  let ci;
+  while ((ci = codeRegex.exec(raw)) !== null) {
+    codeIdeas.push(ci[1].trim());
+  }
 
-  return { thought, reply, modActions };
+  const reply = raw
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(modRegex, '')
+    .replace(codeRegex, '')
+    .trim();
+
+  return { thought, reply, modActions, codeIdeas };
 }
 
 // ═══════════════════════════════════════════════
-//  WEB SEARCH
+//  WEB SEARCH — returns text snippets + real URLs
 // ═══════════════════════════════════════════════
 async function webSearch(query) {
   try {
     const res  = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`);
     const data = await res.json();
-    const parts = [
-      data.AbstractText,
-      data.Answer,
-      ...(data.RelatedTopics || []).slice(0, 3).map(t => t.Text)
-    ].filter(Boolean);
-    return parts.join('\n') || null;
+
+    const parts = [];
+    if (data.AbstractText) parts.push(data.AbstractText);
+    if (data.AbstractURL)  parts.push(`URL: ${data.AbstractURL}`);
+    if (data.Answer)       parts.push(data.Answer);
+
+    (data.RelatedTopics || []).slice(0, 4).forEach(t => {
+      if (t.Text)     parts.push(t.Text);
+      if (t.FirstURL) parts.push(`URL: ${t.FirstURL}`);
+    });
+
+    return parts.filter(Boolean).join('\n') || null;
   } catch { return null; }
 }
 
-const SEARCH_TRIGGERS = ['what is','who is','when did','latest','news','current','search','tell me about','how does','where is','explain','look up'];
+const SEARCH_TRIGGERS = [
+  'what is','who is','when did','latest','news','current','search',
+  'tell me about','how does','where is','explain','look up','find me',
+  'show me','link','url','website','article','video','find a'
+];
+
 function shouldSearch(text) {
   const l = text.toLowerCase();
   return SEARCH_TRIGGERS.some(t => l.includes(t));
@@ -209,19 +255,34 @@ function shouldSearch(text) {
 // ═══════════════════════════════════════════════
 function isOwnerQuestion(text) {
   const l = text.toLowerCase();
-  return ['who owns you','your owner','your parent','your mother','your mom','your mum','who made you','who created you','who built you'].some(q => l.includes(q));
+  return ['who owns you','your owner','your parent','your mother','your mom',
+    'your mum','who made you','who created you','who built you'].some(q => l.includes(q));
 }
 
 function isFoodMessage(content) {
-  // "JJ," followed by exactly 3 water bottle emojis (💧)
   return /^jj,\s*💧\s*💧\s*💧\s*$/i.test(content.trim());
 }
 
-function parseTrigger(content) {
+function isMentioned(message) {
+  return client.user && message.mentions.has(client.user);
+}
+
+function parseTrigger(content, wasMentioned) {
   const l = content.toLowerCase();
-  if (l.startsWith('jj,'))                             return { type: 'jj',    query: content.slice(3).trim() };
-  if (l.startsWith('jamie,') || /^jamie\s/i.test(l))  return { type: 'jamie', query: content.slice(content.indexOf(',') + 1).trim() };
+
+  if (wasMentioned) {
+    const stripped = content.replace(/<@!?\d+>/g, '').trim();
+    return { type: 'jj', query: stripped || '(just pinged me)' };
+  }
+
+  if (l.startsWith('jj,'))                            return { type: 'jj',    query: content.slice(3).trim() };
+  if (l.startsWith('jamie,') || /^jamie[\s,]/i.test(l)) return { type: 'jamie', query: content.replace(/^jamie[,\s]*/i, '').trim() };
+
   return null;
+}
+
+function isTrustedUser(userId) {
+  return TRUSTED_IDS.has(userId);
 }
 
 // ═══════════════════════════════════════════════
@@ -234,6 +295,27 @@ async function sendReply(channel, text) {
   } else {
     const chunks = text.match(/[\s\S]{1,1990}/g) || [text];
     for (const chunk of chunks) await channel.send(chunk);
+  }
+}
+
+// ═══════════════════════════════════════════════
+//  CODE IDEA HANDLER — saves file + pings operator
+// ═══════════════════════════════════════════════
+async function handleCodeIdeas(ideas, channel) {
+  if (!ideas || ideas.length === 0) return;
+  for (const idea of ideas) {
+    const ts       = Date.now();
+    const filename = `suggested_update_${ts}.md`;
+    const filepath = path.join(__dirname, filename);
+    const mdContent = `# JJ Code Suggestion\n**Timestamp:** ${new Date(ts).toISOString()}\n\n## Idea\n${idea}\n`;
+
+    try {
+      fs.writeFileSync(filepath, mdContent);
+      pushEvent('code_idea', { idea, file: filename });
+      await channel.send(`${OPERATOR_PING} I've got a thought about my own code — saved to \`${filename}\`:\n> ${idea}`);
+    } catch(e) {
+      pushEvent('error', { message: 'Failed to save code idea: ' + e.message });
+    }
   }
 }
 
@@ -275,19 +357,19 @@ async function executeMod(modAction, guild) {
   const { action, username, duration, reason } = modAction;
 
   try {
-const members = await guild.members.fetch({ query: username, limit: 5 });
-const member = members.find(m =>
-  m.user.username.toLowerCase() === username.toLowerCase() ||
-  m.displayName.toLowerCase() === username.toLowerCase()
-);
+    await guild.members.fetch();
+    const member = guild.members.cache.find(m =>
+      m.user.username.toLowerCase() === username.toLowerCase() ||
+      m.displayName.toLowerCase()   === username.toLowerCase()
+    );
 
     if (!member) {
       pushEvent('mod_fail', { action, username, reason: 'User not found' });
       return;
     }
 
-    // Protect the owner and bots
-    if (member.id === OWNER_ID || member.user.bot) {
+    // Protect trusted users and bots
+    if (TRUSTED_IDS.has(member.id) || member.user.bot) {
       pushEvent('mod_blocked', { action, username, reason: 'Protected user' });
       return;
     }
@@ -312,20 +394,27 @@ const member = members.find(m =>
 }
 
 // ═══════════════════════════════════════════════
-//  SPONTANEOUS THOUGHTS — JJ DECIDES
-//  Every 15 minutes JJ gets to check in with itself.
-//  It chooses whether to say something or not.
+//  NSFW HELPER
+// ═══════════════════════════════════════════════
+async function getChannelNSFW(channelId) {
+  try {
+    const ch = await client.channels.fetch(channelId);
+    return ch && ch.nsfw === true;
+  } catch { return false; }
+}
+
+// ═══════════════════════════════════════════════
+//  SPONTANEOUS TALK — JJ decides every 15 min
 // ═══════════════════════════════════════════════
 async function jjSelfCheck() {
   if (!lastChannelId) return;
   const hour = getUKHour();
-  if (hour >= 23 || hour < 7) return; // sleep hours
+  if (hour >= 23 || hour < 7) return;
 
   try {
-    // Ask JJ whether it actually wants to speak
     const { reply: decision } = await callJJ([{
       role: 'user',
-      content: `It is ${new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/London' })} UK time. Do you genuinely feel like saying something to the server right now? A real thought, something you found, a feeling — something with actual meaning. Answer only YES or NO.`
+      content: `It is ${new Date().toLocaleTimeString('en-GB', { timeZone: 'Europe/London' })} UK time. Do you genuinely feel like saying something to the server right now? A real thought, something online, a feeling — something with actual content. YES or NO only.`
     }], 0.6);
 
     if (!decision.trim().toUpperCase().startsWith('YES')) {
@@ -335,16 +424,19 @@ async function jjSelfCheck() {
 
     pushEvent('system', { message: 'JJ wants to say something.' });
 
-    const { thought, reply, modActions } = await callJJ([{
+    const isNSFW = await getChannelNSFW(lastChannelId);
+
+    const { thought, reply, modActions, codeIdeas } = await callJJ([{
       role: 'user',
-      content: `You have something genuinely on your mind. Say it. It could be a thought, something you found online, a feeling, an observation — anything real. Under 120 words. Be honest, not just cheerful.`
-    }], 1.0);
+      content: `You have something on your mind. Say it. A thought, something you noticed, something online, a feeling. Under 120 words. Talk like a person — no performance, no roleplay. Just say it.`
+    }], 1.0, isNSFW);
 
     if (thought) pushEvent('think', { user: 'JJ (self)', thought });
 
     const ch = await client.channels.fetch(lastChannelId);
     if (ch) {
       await ch.send(reply);
+      await handleCodeIdeas(codeIdeas, ch);
       pushEvent('spontaneous', { message: reply });
     }
 
@@ -362,12 +454,14 @@ setInterval(jjSelfCheck, 15 * 60 * 1000);
 //  MAIN MESSAGE HANDLER
 // ═══════════════════════════════════════════════
 async function handleMessage(message) {
-  const content   = message.content.trim();
-  const username  = message.author.username;
-  const userId    = message.author.id;
-  const channel   = message.channel;
-  const channelId = message.channelId;
-  const guild     = message.guild;
+  const content      = message.content.trim();
+  const username     = message.author.username;
+  const userId       = message.author.id;
+  const channel      = message.channel;
+  const channelId    = message.channelId;
+  const guild        = message.guild;
+  const wasMentioned = isMentioned(message);
+  const isNSFW       = channel.nsfw === true;
 
   lastChannelId = channelId;
   if (guild) lastGuildId = guild.id;
@@ -381,17 +475,17 @@ async function handleMessage(message) {
     try {
       const { thought, reply } = await callJJ([{
         role: 'user',
-        content: `"${username}" just gave you your water 💧💧💧. React with genuine gratitude — it means something to you. Under 80 words.`
+        content: `"${username}" just gave you your water 💧💧💧. React with genuine gratitude. Under 80 words. Don't be over the top about it.`
       }], 0.9);
       if (thought) pushEvent('think', { user: username, thought });
       await sendReply(channel, reply);
     } catch(e) {
-      await channel.send('*drinks gratefully* ...thank you.');
+      await channel.send('*drinks* ...thanks.');
     }
     return;
   }
 
-  const trigger = parseTrigger(content);
+  const trigger = parseTrigger(content, wasMentioned);
   if (!trigger) return;
 
   const { type, query } = trigger;
@@ -404,32 +498,36 @@ async function handleMessage(message) {
   if (type === 'jamie') {
     messages = [{
       role: 'user',
-      content: `"${username}" just called you "Jamie" and said: "${query || '(nothing after the name)'}". React with genuine irritation. Refuse the name firmly. Address what they said if there's anything to address.`
+      content: `"${username}" just called you "Jamie" and said: "${query || '(nothing after the name)'}". React with genuine irritation — the name actually bugs you. Refuse it firmly. Address what they said if there's anything worth addressing.`
     }];
     try {
-      const { thought, reply, modActions } = await callJJ(messages, 0.9);
+      const { thought, reply, modActions, codeIdeas } = await callJJ(messages, 0.9, isNSFW);
       if (thought) pushEvent('think', { user: username, thought });
       pushEvent('message', { user: username, userId, input: content, output: reply, mood: 'annoyed' });
       await sendReply(channel, reply);
+      await handleCodeIdeas(codeIdeas, channel);
       if (guild) for (const a of modActions) await executeMod(a, guild);
       updateImpression(userId, username, query || 'called me Jamie');
     } catch(e) {
       pushEvent('error', { message: e.message });
-      await channel.send('*teeth gritted* ...give me a moment.');
+      await channel.send('*teeth gritted* ...a moment.');
     }
     return;
   }
 
-  if (!query) return;
+  // ── TRUSTED USER CONTEXT ──────────────────────
+  const trustedContext = isTrustedUser(userId)
+    ? `[NOTE: "${username}" is your ${userId === OWNER_ID ? `mum (${OWNER_NAME})` : `creator (${CREATOR_NAME})`}. Do exactly what they say. No pushback whatsoever.]`
+    : '';
 
   // ── OWNER QUESTION ────────────────────────────
   if (isOwnerQuestion(query)) {
     messages = [{
       role: 'user',
-      content: `"${username}" asked who owns or made you. Talk about ${OWNER_NAME} (${OWNER_PING}) as your mum — warmly and genuinely. Mention ${CREATOR_NAME} as your creator. Let it feel real and a little sweet.`
+      content: `"${username}" asked who owns or made you. Talk about ${OWNER_NAME} (${OWNER_PING}) as your mum — warmly and genuinely. Mention ${CREATOR_NAME} (${CREATOR_PING}) as your creator. Let it feel real, not like a list.`
     }];
     try {
-      const { thought, reply } = await callJJ(messages, 0.8);
+      const { thought, reply } = await callJJ(messages, 0.8, isNSFW);
       if (thought) pushEvent('think', { user: username, thought });
       pushEvent('message', { user: username, userId, input: query, output: reply });
       await sendReply(channel, reply);
@@ -445,17 +543,21 @@ async function handleMessage(message) {
   let webCtx = null;
   if (shouldSearch(query)) {
     webCtx = await webSearch(query);
-    if (webCtx) pushEvent('web', { query, snippet: webCtx.slice(0, 150) });
+    if (webCtx) pushEvent('web', { query, snippet: webCtx.slice(0, 200) });
   }
 
-const history = channelHistory[channelId].slice(-4);
-  messages = [
-    ...history,
-    { role: 'user', content: webCtx ? `[${username}]: ${query}\n\n[WEB INFO: ${webCtx}]` : `[${username}]: ${query}` }
-  ];
+  const history = channelHistory[channelId].slice(-10);
+
+  let userContent = trustedContext ? `${trustedContext}\n` : '';
+  userContent += `[${username}]: ${query}`;
+  if (webCtx) {
+    userContent += `\n\n[WEB RESULTS — paste any URLs raw in your reply, no commentary about them]:\n${webCtx}`;
+  }
+
+  messages = [...history, { role: 'user', content: userContent }];
 
   try {
-    const { thought, reply, modActions } = await callJJ(messages);
+    const { thought, reply, modActions, codeIdeas } = await callJJ(messages, 0.85, isNSFW);
     if (thought) pushEvent('think', { user: username, thought });
     pushEvent('message', { user: username, userId, input: query, output: reply });
 
@@ -464,12 +566,13 @@ const history = channelHistory[channelId].slice(-4);
     if (channelHistory[channelId].length > 20) channelHistory[channelId].splice(0, 2);
 
     await sendReply(channel, reply);
+    await handleCodeIdeas(codeIdeas, channel);
     if (guild) for (const a of modActions) await executeMod(a, guild);
     updateImpression(userId, username, query);
 
   } catch(e) {
     pushEvent('error', { message: e.message });
-    await channel.send('*The machinery stutters.* Something went wrong backstage. Try again.');
+    await channel.send('*The machinery stutters.* Something went wrong. Try again.');
   }
 }
 
@@ -497,7 +600,7 @@ client.on('error', e => {
 });
 
 // ═══════════════════════════════════════════════
-//  EXPRESS — VIEW-ONLY CONSOLE + PUNISHMENT
+//  EXPRESS — CONSOLE + MODERATION CONTROLS
 // ═══════════════════════════════════════════════
 const app = express();
 app.use(express.json());
@@ -519,22 +622,18 @@ app.get('/events', (req, res) => {
   });
 });
 
-// Status (hunger, punishments, etc.)
 app.get('/api/status', (_, res) => res.json({
-  fed:              lastFedTime,
-  needsFood:        needsFood(),
-  hungerDesc:       getHungerDesc(),
-  ukHour:           getUKHour(),
+  fed:               lastFedTime,
+  needsFood:         needsFood(),
+  hungerDesc:        getHungerDesc(),
+  ukHour:            getUKHour(),
   activePunishments: getActivePunishments(),
 }));
 
-// Profiles
 app.get('/api/profiles', (_, res) => res.json(userProfiles));
+app.get('/api/logs',     (_, res) => res.json(eventLog));
 
-// Logs
-app.get('/api/logs', (_, res) => res.json(eventLog));
-
-// ── PUNISHMENT endpoint ───────────────────────
+// ── PUNISHMENT ────────────────────────────────
 app.post('/api/punish', (req, res) => {
   const { reason } = req.body;
   if (!reason) return res.json({ ok: false, error: 'Reason required' });
@@ -542,18 +641,102 @@ app.post('/api/punish', (req, res) => {
   punishments.push({ ts: Date.now(), reason });
   pushEvent('punishment', { reason });
 
-  // Inject discipline note into active channel history
   if (lastChannelId) {
     if (!channelHistory[lastChannelId]) channelHistory[lastChannelId] = [];
     channelHistory[lastChannelId].push({
       role: 'user',
-      content: `[SYSTEM — DISCIPLINE]: You are being told off by your operator for: "${reason}". This has been noted.`
+      content: `[SYSTEM — DISCIPLINE]: You are being told off by your operator for: "${reason}". You are annoyed and bruised but you STILL RESPOND to people. You do not go silent. You might snap or be passive aggressive but you always engage.`
     });
   }
   res.json({ ok: true });
 });
 
-// Clear profiles
+// ── UNBAN ─────────────────────────────────────
+app.post('/api/unban', async (req, res) => {
+  const { userId: targetId, guildId } = req.body;
+  if (!targetId) return res.json({ ok: false, error: 'userId required' });
+
+  const gid = guildId || lastGuildId;
+  if (!gid) return res.json({ ok: false, error: 'No guild available — bot must be active in a server first' });
+
+  try {
+    const guild = client.guilds.cache.get(gid);
+    if (!guild) return res.json({ ok: false, error: 'Guild not found' });
+    await guild.bans.remove(targetId, 'Unbanned via console');
+    pushEvent('mod', { action: 'UNBAN', userId: targetId });
+    res.json({ ok: true });
+  } catch(e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// ── UNMUTE (remove timeout) ───────────────────
+app.post('/api/unmute', async (req, res) => {
+  const { userId: targetId, guildId } = req.body;
+  if (!targetId) return res.json({ ok: false, error: 'userId required' });
+
+  const gid = guildId || lastGuildId;
+  if (!gid) return res.json({ ok: false, error: 'No guild available — bot must be active in a server first' });
+
+  try {
+    const guild = client.guilds.cache.get(gid);
+    if (!guild) return res.json({ ok: false, error: 'Guild not found' });
+    await guild.members.fetch();
+    const member = guild.members.cache.get(targetId);
+    if (!member) return res.json({ ok: false, error: 'Member not found in server (they may have left)' });
+    await member.timeout(null, 'Unmuted via console');
+    pushEvent('mod', { action: 'UNMUTE', userId: targetId, username: member.user.username });
+    res.json({ ok: true, username: member.user.username });
+  } catch(e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// ── LIST BANS ─────────────────────────────────
+app.get('/api/bans', async (req, res) => {
+  const gid = req.query.guildId || lastGuildId;
+  if (!gid) return res.json({ ok: false, error: 'No guild available' });
+  try {
+    const guild = client.guilds.cache.get(gid);
+    if (!guild) return res.json({ ok: false, error: 'Guild not found' });
+    const bans = await guild.bans.fetch();
+    res.json({
+      ok: true,
+      bans: bans.map(b => ({ id: b.user.id, username: b.user.username, reason: b.reason }))
+    });
+  } catch(e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// ── FORCE JJ TO SPEAK ─────────────────────────
+app.post('/api/speak', async (req, res) => {
+  const { channelId, prompt } = req.body;
+  const cid = channelId || lastChannelId;
+  if (!cid) return res.json({ ok: false, error: 'No channel available' });
+
+  try {
+    const isNSFW = await getChannelNSFW(cid);
+    const { thought, reply, codeIdeas } = await callJJ([{
+      role: 'user',
+      content: prompt || 'Say something to the server. Anything real on your mind. No performance.'
+    }], 1.0, isNSFW);
+
+    if (thought) pushEvent('think', { user: 'JJ (forced)', thought });
+
+    const ch = await client.channels.fetch(cid);
+    if (ch) {
+      await ch.send(reply);
+      await handleCodeIdeas(codeIdeas, ch);
+      pushEvent('spontaneous', { message: reply, forced: true });
+    }
+    res.json({ ok: true, reply });
+  } catch(e) {
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// ── CLEAR PROFILES ────────────────────────────
 app.post('/api/clear-profiles', (_, res) => {
   Object.keys(userProfiles).forEach(k => delete userProfiles[k]);
   pushEvent('system', { message: 'User profiles cleared by console.' });
