@@ -1,18 +1,26 @@
 {
   "name": "caine-bot",
   "version": "1.0.0",
-  "description": "Caine — The Amazing Digital Circus AI Discord Bot",
+  "description": "JJ Discord bot",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "@discordjs/voice": "^0.17.0",
+    "@discordjs/opus": "^0.9.0",
+    "libsodium-wrappers": "^0.7.13",
+    "ffmpeg-static": "^5.2.0",
+    "groq-sdk": "^0.7.0",
+    "express": "^4.18.2",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "dependencies": {
-    "discord.js": "^14.15.0",
-    "groq-sdk": "^0.7.0",
-    "express": "^4.19.0",
-    "dotenv": "^16.4.0"
   }
 }
