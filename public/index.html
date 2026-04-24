@@ -316,6 +316,56 @@ body::before{
 .punish-chip-time{font-family:var(--ff-mono);font-size:10px;color:var(--dim);margin-left:auto;}
 
 /* ══════════════════════════════════════
+   RIGHT PANEL TABS
+══════════════════════════════════════ */
+.right-tabs{
+  display:flex;gap:2px;margin-left:auto;
+}
+.right-tab{
+  background:none;border:1px solid var(--dim);border-radius:5px;
+  padding:3px 9px;font-size:10px;font-family:var(--ff-mono);
+  color:var(--muted);cursor:pointer;transition:all .15s;letter-spacing:.06em;
+}
+.right-tab.active{background:rgba(184,122,232,0.15);border-color:var(--lilac);color:var(--lilac);}
+.right-tab:hover:not(.active){border-color:var(--lilac);color:var(--lilac);}
+
+/* ── Suggestions panel ── */
+#suggestions-list{
+  flex:1;overflow-y:auto;padding:8px;
+  display:flex;flex-direction:column;gap:6px;
+  display:none;
+}
+#suggestions-list::-webkit-scrollbar{width:3px;}
+#suggestions-list::-webkit-scrollbar-thumb{background:var(--rim);border-radius:4px;}
+
+.suggestion-card{
+  background:var(--lift);border:1px solid var(--sage-dim);
+  border-radius:10px;padding:11px 13px;transition:border-color .15s;
+  border-left:3px solid var(--sage);
+}
+.suggestion-card:hover{border-color:rgba(122,232,176,0.4);}
+.suggestion-meta{
+  display:flex;align-items:center;gap:6px;margin-bottom:7px;
+}
+.suggestion-badge{
+  font-family:var(--ff-mono);font-size:9px;font-weight:500;
+  padding:2px 7px;border-radius:4px;letter-spacing:.08em;
+  background:rgba(122,232,176,.15);color:var(--sage);flex-shrink:0;
+}
+.suggestion-time{font-size:10px;color:var(--dim);font-family:var(--ff-mono);margin-left:auto;}
+.suggestion-body{
+  font-size:12.5px;color:var(--text);line-height:1.55;
+}
+.suggestion-file{
+  font-size:10px;color:var(--dim);font-family:var(--ff-mono);
+  margin-top:5px;
+}
+.suggestions-empty{
+  flex:1;display:flex;align-items:center;justify-content:center;
+  font-size:12px;color:var(--dim);font-style:italic;padding:20px;text-align:center;
+}
+
+/* ══════════════════════════════════════
    EVENT COUNT BADGE
 ══════════════════════════════════════ */
 #event-count{
@@ -374,14 +424,21 @@ body::before{
   <!-- RIGHT PANEL -->
   <div id="right-panel">
 
-    <!-- PROFILES -->
+    <!-- PROFILES / SUGGESTIONS -->
     <div id="profiles-panel">
       <div class="panel-head">
-        <span class="panel-head-title">👁 JJ's Impressions</span>
-        <button class="filter-btn" id="clear-profiles-btn" style="margin-left:auto;">CLEAR</button>
+        <span class="panel-head-title" id="right-panel-title">👁 JJ's Impressions</span>
+        <div class="right-tabs">
+          <button class="right-tab active" data-tab="impressions">IMPRESSIONS</button>
+          <button class="right-tab" data-tab="suggestions">SUGGESTIONS</button>
+          <button class="filter-btn" id="clear-profiles-btn" style="margin-left:6px;">CLEAR</button>
+        </div>
       </div>
       <div id="profiles-list">
         <div class="empty-state">No one has spoken to JJ yet.</div>
+      </div>
+      <div id="suggestions-list">
+        <div class="suggestions-empty">No suggestions from JJ yet.</div>
       </div>
     </div>
 
@@ -514,8 +571,67 @@ function rebuildFeed() {
   if (shown === 0) feed.appendChild(feedEmpty);
 }
 
-// ── Profiles ──────────────────────────────────────────
-const profilesList = document.getElementById('profiles-list');
+// ── Right panel tabs ──────────────────────────────────
+const profilesList    = document.getElementById('profiles-list');
+const suggestionsList = document.getElementById('suggestions-list');
+const rightPanelTitle = document.getElementById('right-panel-title');
+let activeRightTab = 'impressions';
+
+document.querySelectorAll('.right-tab[data-tab]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.right-tab[data-tab]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    activeRightTab = btn.dataset.tab;
+    if (activeRightTab === 'impressions') {
+      profilesList.style.display = 'flex';
+      suggestionsList.style.display = 'none';
+      rightPanelTitle.textContent = '👁 JJ\'s Impressions';
+    } else {
+      profilesList.style.display = 'none';
+      suggestionsList.style.display = 'flex';
+      rightPanelTitle.textContent = '💡 JJ\'s Suggestions';
+      refreshSuggestions();
+    }
+  });
+});
+
+// ── Suggestions ───────────────────────────────────────
+async function refreshSuggestions() {
+  try {
+    const data = await fetch('/api/suggestions').then(r => r.json());
+    if (!data.ok) return;
+    renderSuggestions(data.suggestions || []);
+  } catch(_) {}
+}
+
+function renderSuggestions(list) {
+  suggestionsList.innerHTML = '';
+  if (list.length === 0) {
+    suggestionsList.innerHTML = '<div class="suggestions-empty">No suggestions from JJ yet.</div>';
+    return;
+  }
+  list.forEach(s => {
+    const card = document.createElement('div');
+    card.className = 'suggestion-card';
+    const when = s.ts ? relTime(s.ts) : '—';
+    card.innerHTML = `
+      <div class="suggestion-meta">
+        <span class="suggestion-badge">CODE IDEA</span>
+        <span class="suggestion-time">${escHtml(when)}</span>
+      </div>
+      <div class="suggestion-body">${escHtml(s.idea || '')}</div>
+      <div class="suggestion-file">${escHtml(s.filename || '')}</div>
+    `;
+    suggestionsList.appendChild(card);
+  });
+}
+
+// Refresh suggestions whenever a code_idea event comes in (via SSE)
+function maybeRefreshSuggestions(ev) {
+  if (ev.type === 'code_idea' && activeRightTab === 'suggestions') {
+    refreshSuggestions();
+  }
+}
 
 function renderProfiles() {
   const entries = Object.entries(profilesMap);
@@ -616,6 +732,7 @@ function connectSSE() {
     if (ev.type === 'fed' || ev.type === 'punishment') {
       refreshStatus();
     }
+    maybeRefreshSuggestions(ev);
   };
 
   es.onerror = () => {
