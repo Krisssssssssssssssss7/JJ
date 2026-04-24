@@ -5,14 +5,6 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 
-const {
-  joinVC,
-  leaveVC,
-  jjSpeakInVC,
-  isInVC,
-  getVCStatus,
-} = require('./voice');
-
 // ═══════════════════════════════════════════════
 //  CONFIG
 // ═══════════════════════════════════════════════
@@ -53,7 +45,6 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildBans,
-    GatewayIntentBits.GuildVoiceStates,
   ]
 });
 
@@ -175,7 +166,7 @@ function getSessionAge() {
 // ═══════════════════════════════════════════════
 //  SYSTEM PROMPT
 // ═══════════════════════════════════════════════
-function buildSystemPrompt(isNSFW = false, vcMode = false) {
+function buildSystemPrompt(isNSFW = false) {
   const hungerDesc   = getHungerDesc();
   const activePunish = getActivePunishments();
   const sessionAge   = getSessionAge();
@@ -198,10 +189,6 @@ function buildSystemPrompt(isNSFW = false, vcMode = false) {
       ? `- Told off for: "${activePunish.map(p => p.reason).join('; ')}". Bruised but not silent.`
       : null,
   ].filter(Boolean).join('\n');
-
-  const vcNote = vcMode
-    ? `\n\nVOICE MODE: You are speaking out loud. Keep responses SHORT — 1-3 sentences. Spoken rhythm. No asterisks, no bullet points, no formatting. Just talk like a person in a room.`
-    : '';
 
   const nsfwNote = isNSFW
     ? `\n\nNSFW CHANNEL: More unfiltered. No illegal content. No explicit roleplay. Drop URLs raw.`
@@ -269,7 +256,7 @@ what you actually notice, feel, and decide before replying — your real interna
 </think>
 Then your reply. If you do not include a <think> block your response is broken.
 
-${emotionalCtx}${vcNote}${nsfwNote}`;
+${emotionalCtx}${nsfwNote}`;
 }
 
 // ═══════════════════════════════════════════════
@@ -286,11 +273,11 @@ function pushEvent(type, data) {
 // ═══════════════════════════════════════════════
 //  JJ CALL
 // ═══════════════════════════════════════════════
-async function callJJ(messages, temperature = 0.85, isNSFW = false, vcMode = false) {
+async function callJJ(messages, temperature = 0.85, isNSFW = false) {
   const res = await groq.chat.completions.create({
     model: MODEL,
-    messages: [{ role: 'system', content: buildSystemPrompt(isNSFW, vcMode) }, ...messages],
-    max_tokens: vcMode ? 150 : 600,
+    messages: [{ role: 'system', content: buildSystemPrompt(isNSFW) }, ...messages],
+    max_tokens: 600,
     temperature,
   });
 
@@ -427,12 +414,8 @@ function parseTrigger(content, wasMentioned) {
     const stripped = content.replace(/<@!?\d+>/g, '').trim();
     return { type: 'jj', query: stripped || '(just pinged me)' };
   }
-  if (l.startsWith('jj,'))                              return { type: 'jj',    query: content.slice(3).trim() };
-  if (l.startsWith('jamie,') || /^jamie[\s,]/i.test(l)) return { type: 'jamie', query: content.replace(/^jamie[,\s]*/i, '').trim() };
-
-  if (l === 'jj vc' || l === 'jj join')  return { type: 'vc_join',  query: '' };
-  if (l === 'jj leave' || l === 'jj bye') return { type: 'vc_leave', query: '' };
-
+  if (l.startsWith('jj,'))                               return { type: 'jj',    query: content.slice(3).trim() };
+  if (l.startsWith('jamie,') || /^jamie[\s,]/i.test(l))  return { type: 'jamie', query: content.replace(/^jamie[,\s]*/i, '').trim() };
   return null;
 }
 
@@ -443,7 +426,7 @@ function isTrustedUser(userId) {
 function getBondContext(userId, username) {
   const bond = jjState.sessionBonds[userId];
   if (!bond || bond === 0) return null;
-  if (bond >= 2) return `[NOTE: You've genuinely warmed to ${username} this session.]`;
+  if (bond >= 2)  return `[NOTE: You've genuinely warmed to ${username} this session.]`;
   if (bond === 1) return `[NOTE: ${username} has been alright. Slightly less guarded.]`;
   if (bond === -1) return `[NOTE: ${username} has been grating on you slightly. A bit flatter with them.]`;
   if (bond <= -2) return `[NOTE: ${username} has genuinely annoyed you this session. You're cold.]`;
@@ -642,52 +625,6 @@ Under 120 words. No performance. No setup. Just say it like it just occurred to 
 setInterval(jjSelfCheck, 10 * 60 * 1000);
 
 // ═══════════════════════════════════════════════
-//  VC COMMAND HANDLERS
-// ═══════════════════════════════════════════════
-async function handleVCJoin(message) {
-  const member = message.member;
-  if (!member) return message.reply("i can't join if you're not in a VC...");
-
-  const voiceChannel = member.voice.channel;
-  if (!voiceChannel) return message.reply("you're not even in a voice channel lol");
-
-  const result = await joinVC(
-    voiceChannel,
-    groq,
-    (msgs, temp, nsfw) => callJJ(msgs, temp, nsfw, true),
-    jjState,
-    pushEvent
-  );
-
-  if (result.already) {
-    await message.reply("i'm already there...");
-  } else if (result.ok) {
-    const { reply } = await callJJ([{
-      role: 'user',
-      content: `You just joined a voice channel in the server. React to joining. Short — one or two sentences. Spoken, not typed. A little reluctant but present.`
-    }], 0.9, false, true);
-
-    await message.reply(`*joins ${voiceChannel.name}*`);
-    if (reply) {
-      setTimeout(() => {
-        jjSpeakInVC(message.guild.id, reply, groq, pushEvent);
-      }, 1500);
-    }
-  } else {
-    await message.reply(`couldn't join: ${result.error}`);
-  }
-}
-
-async function handleVCLeave(message) {
-  const guildId = message.guild?.id;
-  if (!guildId || !isInVC(guildId)) {
-    return message.reply("i'm not even in VC");
-  }
-  await leaveVC(guildId, pushEvent);
-  await message.reply("*leaves*");
-}
-
-// ═══════════════════════════════════════════════
 //  MAIN MESSAGE HANDLER
 // ═══════════════════════════════════════════════
 async function handleMessage(message) {
@@ -726,9 +663,6 @@ async function handleMessage(message) {
   if (!trigger) return;
 
   const { type, query } = trigger;
-
-  if (type === 'vc_join')  return handleVCJoin(message);
-  if (type === 'vc_leave') return handleVCLeave(message);
 
   ensureProfile(userId, username);
   pushEvent('trigger', { type: type.toUpperCase(), user: username, query: query.slice(0, 100) });
@@ -833,92 +767,6 @@ client.on('messageCreate', async msg => {
   }
 });
 
-// ═══════════════════════════════════════════════
-//  AUTO-JOIN / AUTO-LEAVE — voice state changes
-// ═══════════════════════════════════════════════
-client.on('voiceStateUpdate', async (oldState, newState) => {
-  // Ignore bots (including JJ)
-  if (newState.member?.user?.bot || oldState.member?.user?.bot) return;
-
-  const guild   = newState.guild   || oldState.guild;
-  const guildId = guild?.id;
-  if (!guildId) return;
-
-  const username = newState.member?.user?.username
-    || oldState.member?.user?.username
-    || 'someone';
-
-  // ── SOMEONE JOINED A VC ───────────────────────
-  if (!oldState.channelId && newState.channelId && newState.channel) {
-    if (!isInVC(guildId)) {
-      pushEvent('vc', { action: 'auto_join_trigger', user: username, channel: newState.channel.name });
-
-      try {
-        const result = await joinVC(
-          newState.channel,
-          groq,
-          (msgs, temp, nsfw) => callJJ(msgs, temp, nsfw, true),
-          jjState,
-          pushEvent,
-        );
-
-        if (result.ok) {
-          // Generate a reaction line — reluctant but present, spoken
-          const { reply } = await callJJ([{
-            role: 'user',
-            content: `"${username}" just joined a voice channel and you decided to join them without being asked. React to showing up — like you just walked in and you're not sure why you did but here you are. 1-2 sentences, spoken naturally. No asterisks.`,
-          }], 0.9, false, true).catch(() => ({ reply: null }));
-
-          // Post in text chat
-          const textCh = lastChannelId
-            ? await client.channels.fetch(lastChannelId).catch(() => null)
-            : null;
-          if (textCh && reply) await sendReply(textCh, reply);
-
-          // Also say it out loud in VC
-          if (reply) {
-            setTimeout(() => jjSpeakInVC(guildId, reply, groq, pushEvent), 1500);
-          }
-        }
-      } catch(e) {
-        pushEvent('error', { message: 'Auto VC join failed: ' + e.message });
-      }
-    }
-  }
-
-  // ── SOMEONE LEFT A VC — leave if channel is now empty ──
-  if (oldState.channelId && isInVC(guildId)) {
-    const vcStatus = getVCStatus(guildId);
-    if (vcStatus) {
-      const vc = guild.channels.cache.get(vcStatus.channelId);
-      if (vc) {
-        const humans = vc.members.filter(m => !m.user.bot).size;
-        if (humans === 0) {
-          pushEvent('vc', { action: 'auto_leave_trigger', reason: 'empty channel' });
-
-          // Say a short goodbye in VC before disconnecting
-          try {
-            const { reply } = await callJJ([{
-              role: 'user',
-              content: `Everyone just left the voice channel. You're about to leave too. Say something short — resigned, dry, one sentence.`,
-            }], 0.9, false, true).catch(() => ({ reply: null }));
-
-            if (reply) await jjSpeakInVC(guildId, reply, groq, pushEvent);
-          } catch(_) {}
-
-          await leaveVC(guildId, pushEvent);
-
-          // Note it in text chat
-          const textCh = lastChannelId
-            ? await client.channels.fetch(lastChannelId).catch(() => null)
-            : null;
-          if (textCh) await sendReply(textCh, '*leaves vc*').catch(() => {});
-        }
-      }
-    }
-  }
-});
-
 client.on('error', e => {
   pushEvent('error', { message: 'Discord client error: ' + e.message });
   console.error('Discord error:', e);
@@ -949,7 +797,6 @@ app.get('/api/status', (_, res) => res.json({
   sessionBonds: jjState.sessionBonds,
   recentEmotions: jjState.recentEmotionalEvents.slice(0, 5),
   noticedThings: jjState.noticedThings.slice(0, 5),
-  vc: lastGuildId ? getVCStatus(lastGuildId) : null,
   bigBro: { lastPinged: lastBigBroPing, cooldownMs: BIG_BRO_PING_COOLDOWN },
 }));
 
@@ -1012,7 +859,7 @@ app.get('/api/bans', async (req, res) => {
 });
 
 app.post('/api/speak', async (req, res) => {
-  const { channelId, prompt, voice } = req.body;
+  const { channelId, prompt } = req.body;
   const cid = channelId || lastChannelId;
   if (!cid) return res.json({ ok: false, error: 'No channel available' });
   try {
@@ -1027,22 +874,7 @@ app.post('/api/speak', async (req, res) => {
       await handleCodeIdeas(codeIdeas, ch);
       pushEvent('spontaneous', { message: reply, forced: true });
     }
-
-    if (voice && lastGuildId && isInVC(lastGuildId)) {
-      await jjSpeakInVC(lastGuildId, reply, groq, pushEvent);
-    }
     res.json({ ok: true, reply });
-  } catch(e) { res.json({ ok: false, error: e.message }); }
-});
-
-app.post('/api/vc-speak', async (req, res) => {
-  const { text, guildId } = req.body;
-  const gid = guildId || lastGuildId;
-  if (!gid || !isInVC(gid)) return res.json({ ok: false, error: 'Not in VC' });
-  if (!text) return res.json({ ok: false, error: 'text required' });
-  try {
-    await jjSpeakInVC(gid, text, groq, pushEvent);
-    res.json({ ok: true });
   } catch(e) { res.json({ ok: false, error: e.message }); }
 });
 
